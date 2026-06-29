@@ -1,0 +1,7 @@
+[package]
+name = "tidydog-core"
+version = "0.1.0"
+edition = "2021"
+description = "TidyDog safety core: scope guard + propose/confirm/execute/undo gate. No external deps."
+
+[dependencies]
