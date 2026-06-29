@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Rust build artifacts
+target/
+
 # N2: 평문 키 파일이 실수로 커밋되는 것을 방지
 .env
 .env.*
