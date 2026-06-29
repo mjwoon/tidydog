@@ -18,6 +18,11 @@ dist-ssr
 *.key
 *.secret
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
