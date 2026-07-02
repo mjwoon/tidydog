@@ -19,10 +19,11 @@ export function SettingsModal({ onClose }: Props) {
     setSaved(false);
     try {
       await invoke("set_api_key", { key: trimmed });
+      setApiKey(""); // N2: 제출 즉시 state 정리 (성공)
       setSaved(true);
-      setApiKey("");
       setTimeout(onClose, 900);
     } catch (err) {
+      setApiKey(""); // N2: 실패해도 키는 state에서 즉시 제거 — 재입력 필요
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
