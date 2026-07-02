@@ -1,9 +1,8 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-pub fn init_db(app_data_dir: &Path) -> Result<Connection, String> {
-    let db_path = app_data_dir.join("index.db");
-    let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
+/// 기존 Connection에 스키마를 적용한다. 테스트용 in-memory DB에서도 사용.
+pub fn init_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          CREATE TABLE IF NOT EXISTS files (
@@ -79,8 +78,13 @@ pub fn init_db(app_data_dir: &Path) -> Result<Connection, String> {
     )
     .map_err(|e| e.to_string())?;
     // 기존 DB 마이그레이션: completed_at 컬럼이 없으면 추가.
-    let _ = conn.execute_batch(
-        "ALTER TABLE journal ADD COLUMN completed_at INTEGER;"
-    );
+    let _ = conn.execute_batch("ALTER TABLE journal ADD COLUMN completed_at INTEGER;");
+    Ok(())
+}
+
+pub fn init_db(app_data_dir: &Path) -> Result<Connection, String> {
+    let db_path = app_data_dir.join("index.db");
+    let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
+    init_schema(&conn)?;
     Ok(conn)
 }

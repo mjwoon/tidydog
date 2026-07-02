@@ -1,3 +1,4 @@
+pub mod agent;
 mod db;
 pub mod fileops;
 mod guard;
@@ -513,6 +514,52 @@ fn parse_tags_for_wiki(json_str: &str) -> Vec<String> {
 /// - 이미 to_path에 파일이 있으면 → complete 처리 (op가 완료됐으나 기록이 안 됨).
 /// - from_path에 파일이 있고 to_path에 없으면 → op가 시작도 안 된 것이므로 항목 삭제.
 /// - 둘 다 없으면 → 경고만 남기고 completed 처리 (손실은 이미 발생).
+// ── Phase 4: 챗 + 에이전트 루프 ─────────────────────────────────────────────
+
+/// 사용자 메시지를 받아 에이전트 루프를 실행하고 결과를 반환한다.
+///
+/// - `message`: 현재 사용자 입력.
+/// - `history`: 이전 대화 (Claude API 형식 JSON 배열).
+/// - `user_triggered_undo`: true 이면 LLM 없이 undo 경로 실행 (I2).
+/// - `root`: 현재 스캔된 루트 경로 (propose_plan Guard 화이트리스트).
+#[tauri::command]
+fn chat(
+    app: tauri::AppHandle,
+    message: String,
+    history: Vec<serde_json::Value>,
+    user_triggered_undo: bool,
+    root: String,
+) -> Result<serde_json::Value, String> {
+    let (app_data_dir, staging_dir) = app_paths(&app)?;
+    fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+    let conn = db::init_db(&app_data_dir)?;
+
+    // N2: API 키 키체인 조회.
+    let api_key = keyring::Entry::new("tidydog", "anthropic_api_key")
+        .map_err(|e| format!("keyring 오류: {e}"))?
+        .get_password()
+        .map_err(|e| format!("API 키가 없습니다. 설정에서 먼저 입력하세요: {e}"))?;
+
+    // 대화 히스토리에 현재 메시지 추가.
+    let mut messages = history;
+    messages.push(serde_json::json!({
+        "role":    "user",
+        "content": message
+    }));
+
+    let client = agent::ClaudeClient { api_key };
+    let result = agent::run_agent_loop(
+        &client,
+        &conn,
+        &staging_dir,
+        messages,
+        user_triggered_undo,
+        &root,
+    )?;
+
+    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+}
+
 fn recover_inflight(conn: &rusqlite::Connection, staging_dir: &std::path::Path) {
     let store = store::SqliteStore::new(conn);
     let inflight = store.inflight_entries();
@@ -591,6 +638,7 @@ pub fn run() {
             index_file_content,
             derive_proposed_dest,
             rebuild_wiki,
+            chat,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
