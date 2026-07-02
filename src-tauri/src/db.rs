@@ -79,6 +79,20 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     // 기존 DB 마이그레이션: completed_at 컬럼이 없으면 추가.
     let _ = conn.execute_batch("ALTER TABLE journal ADD COLUMN completed_at INTEGER;");
+    // Phase 5-b: rule_changes 테이블 (기존 DB 마이그레이션 포함).
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS rule_changes (
+             rule_change_id   TEXT    PRIMARY KEY,
+             created_at       INTEGER NOT NULL,
+             status           TEXT    NOT NULL
+                              CHECK(status IN ('pending','applied','rejected')),
+             natural_language TEXT    NOT NULL,
+             before_content   TEXT    NOT NULL,
+             after_content    TEXT    NOT NULL,
+             diff_text        TEXT    NOT NULL,
+             summary_cards    TEXT    NOT NULL
+         );",
+    );
     Ok(())
 }
 

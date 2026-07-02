@@ -4,6 +4,7 @@ pub mod fileops;
 mod guard;
 pub mod organizer;
 pub mod reader;
+pub mod rule_change;
 mod scanner;
 mod store;
 mod summarizer;
@@ -560,6 +561,24 @@ fn chat(
     Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
 }
 
+/// 사용자가 승인한 규칙 변경을 ORGANIZER.md에 적용한다.
+/// R2: 에이전트 카탈로그에 없음 — 오직 사용자 승인 경로에서만 호출된다.
+/// R4: 반영 전 ORGANIZER.md를 타임스탬프 백업 (apply_rule_change_inner 내부 처리).
+/// `root`: 현재 열려 있는 폴더 경로 (ORGANIZER.md 위치 기준).
+#[tauri::command]
+fn apply_rule_change(
+    app: tauri::AppHandle,
+    rule_change_id: String,
+    root: String,
+) -> Result<serde_json::Value, String> {
+    let (app_data_dir, _) = app_paths(&app)?;
+    fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+    let conn = db::init_db(&app_data_dir)?;
+
+    let organizer_path = std::path::Path::new(&root).join("ORGANIZER.md");
+    rule_change::apply_rule_change_inner(&rule_change_id, &conn, &organizer_path)
+}
+
 fn recover_inflight(conn: &rusqlite::Connection, staging_dir: &std::path::Path) {
     let store = store::SqliteStore::new(conn);
     let inflight = store.inflight_entries();
@@ -639,6 +658,7 @@ pub fn run() {
             derive_proposed_dest,
             rebuild_wiki,
             chat,
+            apply_rule_change,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

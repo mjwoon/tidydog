@@ -1,10 +1,11 @@
 import { useRef, useEffect } from "react";
-import { ChatMessage, ProposedPlan } from "../types";
+import { ChatMessage, ProposedPlan, RuleChange } from "../types";
 
 interface Props {
   messages:     ChatMessage[];
   loading:      boolean;
   onPlanOpen:   (plan: ProposedPlan) => void;
+  onRuleOpen:   (rc: RuleChange) => void;
   folderPath:   string | null;
 }
 
@@ -52,7 +53,53 @@ function PlanChip({ plan, onOpen }: { plan: ProposedPlan; onOpen: () => void }) 
   );
 }
 
-function Bubble({ msg, onPlanOpen }: { msg: ChatMessage; onPlanOpen: (p: ProposedPlan) => void }) {
+function RuleChip({ onOpen }: { onOpen: () => void }) {
+  return (
+    <div style={{
+      marginTop: 8,
+      background: "var(--surface-2)",
+      border: "1px solid var(--line)",
+      borderRadius: "var(--r-sm)",
+      padding: "10px 14px",
+      display: "flex",
+      alignItems: "center",
+      gap: 12,
+      fontSize: 13,
+    }}>
+      <div style={{ flex: 1 }}>
+        <span style={{ fontWeight: 600, color: "var(--ink)" }}>ORGANIZER 규칙 변경 제안 </span>
+        <span style={{ color: "var(--muted)" }}>검토 후 승인하면 반영됩니다</span>
+      </div>
+      <button
+        onClick={onOpen}
+        style={{
+          padding: "5px 14px",
+          borderRadius: "var(--r-sm)",
+          border: "none",
+          background: "var(--primary)",
+          color: "#fff",
+          cursor: "pointer",
+          fontSize: 12.5,
+          fontWeight: 700,
+          fontFamily: "var(--ui)",
+          whiteSpace: "nowrap",
+        }}
+      >
+        규칙 검토 →
+      </button>
+    </div>
+  );
+}
+
+function Bubble({
+  msg,
+  onPlanOpen,
+  onRuleOpen,
+}: {
+  msg:        ChatMessage;
+  onPlanOpen: (p: ProposedPlan) => void;
+  onRuleOpen: (rc: RuleChange) => void;
+}) {
   const isUser = msg.role === "user";
   return (
     <div style={{
@@ -90,6 +137,11 @@ function Bubble({ msg, onPlanOpen }: { msg: ChatMessage; onPlanOpen: (p: Propose
           <PlanChip plan={msg.plan} onOpen={() => onPlanOpen(msg.plan!)} />
         </div>
       )}
+      {msg.ruleChange && (
+        <div style={{ maxWidth: "80%" }}>
+          <RuleChip onOpen={() => onRuleOpen(msg.ruleChange!)} />
+        </div>
+      )}
     </div>
   );
 }
@@ -111,7 +163,7 @@ function ThinkingBubble() {
   );
 }
 
-export function Chat({ messages, loading, onPlanOpen, folderPath }: Props) {
+export function Chat({ messages, loading, onPlanOpen, onRuleOpen, folderPath }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -128,7 +180,7 @@ export function Chat({ messages, loading, onPlanOpen, folderPath }: Props) {
         </div>
       )}
       {messages.map((m) => (
-        <Bubble key={m.id} msg={m} onPlanOpen={onPlanOpen} />
+        <Bubble key={m.id} msg={m} onPlanOpen={onPlanOpen} onRuleOpen={onRuleOpen} />
       ))}
       {loading && <ThinkingBubble />}
       <div ref={bottomRef} />

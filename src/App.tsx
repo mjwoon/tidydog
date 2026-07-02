@@ -1,14 +1,15 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   FileNode, ExecResult, AgentState,
-  ChatMessage, ProposedPlan, ApiMessage, ChatResponse,
+  ChatMessage, ProposedPlan, ApiMessage, ChatResponse, RuleChange,
 } from "./types";
 import { TreeNode } from "./components/TreeNode";
 import { Topbar } from "./components/Topbar";
 import { DogMascot } from "./components/DogMascot";
 import { PlanReview, PlanSummary } from "./components/PlanReview";
+import { RuleReview } from "./components/RuleReview";
 import { Chat } from "./components/Chat";
 
 let msgSeq = 0;
@@ -26,9 +27,21 @@ export default function App() {
   const [inputText, setInputText]     = useState("");
   const inputRef                       = useRef<HTMLInputElement>(null);
 
+  // N1: AI 콘텐츠 처리 동의 상태
+  const [hasConsent, setHasConsent] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    invoke<boolean>("get_ai_consent")
+      .then(setHasConsent)
+      .catch(() => setHasConsent(false));
+  }, []);
+
   // 플랜 모달
   const [pendingPlan, setPendingPlan] = useState<PlanSummary | null>(null);
   const [, setLastResult]   = useState<ExecResult | null>(null);
+
+  // 규칙 변경 모달
+  const [pendingRuleChange, setPendingRuleChange] = useState<RuleChange | null>(null);
 
   // ── 폴더 스캔 ──────────────────────────────────────────────────────────────
 
@@ -76,6 +89,21 @@ export default function App() {
       preview:    plan.preview as "auto" | "standard" | "full_review",
       op_count:   plan.op_count,
     });
+  }
+
+  function openRuleModal(rc: RuleChange) {
+    setPendingRuleChange(rc);
+  }
+
+  function handleRuleApplied() {
+    setPendingRuleChange(null);
+    setAgentState("idle");
+    const agentMsg: ChatMessage = {
+      id:   nextId(),
+      role: "agent",
+      text: "ORGANIZER 규칙이 업데이트되었습니다. 다음 정리부터 새 규칙이 적용됩니다.",
+    };
+    setMessages((prev) => [...prev, agentMsg]);
   }
 
   // ── 챗 입력 전송 ──────────────────────────────────────────────────────────
@@ -167,6 +195,25 @@ export default function App() {
           }
           break;
         }
+
+        case "rule_proposed": {
+          const rc: RuleChange = {
+            rule_change_id: response.rule_change_id!,
+            summary_cards:  response.summary_cards ?? [],
+            diff:           response.diff ?? "",
+            before:         response.before ?? "",
+            after:          response.after ?? "",
+          };
+          const agentMsg: ChatMessage = {
+            id:         nextId(),
+            role:       "agent",
+            text:       "ORGANIZER 규칙 변경을 제안했습니다. 아래 내용을 검토해 주세요.",
+            ruleChange: rc,
+          };
+          setMessages((prev) => [...prev, agentMsg]);
+          setAgentState("done");
+          break;
+        }
       }
     } catch (err: unknown) {
       const errText = err instanceof Error ? err.message : String(err);
@@ -186,6 +233,11 @@ export default function App() {
       e.preventDefault();
       handleSend();
     }
+  }
+
+  async function handleGrantConsent() {
+    await invoke("set_ai_consent", { granted: true });
+    setHasConsent(true);
   }
 
   // ── 마스코트 상태 ─────────────────────────────────────────────────────────
@@ -223,11 +275,44 @@ export default function App() {
               messages={messages}
               loading={agentState === "thinking"}
               onPlanOpen={openPlanModal}
+              onRuleOpen={openRuleModal}
               folderPath={folderPath}
             />
           </div>
 
           <div className="composer">
+            {hasConsent === false && folderPath && (
+              <div style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "8px 14px",
+                background: "var(--caution-soft)",
+                borderTop: "1px solid var(--line)",
+                fontSize: 12.5,
+              }}>
+                <span style={{ flex: 1, color: "var(--caution)" }}>
+                  파일 내용 분석에는 AI 처리 동의가 필요합니다.
+                </span>
+                <button
+                  onClick={handleGrantConsent}
+                  style={{
+                    padding: "4px 12px",
+                    borderRadius: "var(--r-sm)",
+                    border: "1px solid var(--caution)",
+                    background: "transparent",
+                    color: "var(--caution)",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    fontFamily: "var(--ui)",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  동의하기
+                </button>
+              </div>
+            )}
             <div className="input-bar">
               <input
                 ref={inputRef}
@@ -262,6 +347,15 @@ export default function App() {
           root={folderPath}
           onExecuted={handleExecuted}
           onCancel={() => { setPendingPlan(null); setAgentState("idle"); }}
+        />
+      )}
+
+      {pendingRuleChange && folderPath && (
+        <RuleReview
+          ruleChange={pendingRuleChange}
+          root={folderPath}
+          onApplied={handleRuleApplied}
+          onCancel={() => { setPendingRuleChange(null); setAgentState("idle"); }}
         />
       )}
     </>
