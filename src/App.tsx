@@ -10,6 +10,7 @@ import { Topbar } from "./components/Topbar";
 import { DogMascot } from "./components/DogMascot";
 import { PlanReview, PlanSummary } from "./components/PlanReview";
 import { RuleReview } from "./components/RuleReview";
+import { SettingsModal } from "./components/SettingsModal";
 import { Chat } from "./components/Chat";
 
 let msgSeq = 0;
@@ -42,6 +43,9 @@ export default function App() {
 
   // 규칙 변경 모달
   const [pendingRuleChange, setPendingRuleChange] = useState<RuleChange | null>(null);
+
+  // 설정 모달
+  const [showSettings, setShowSettings] = useState(false);
 
   // ── 폴더 스캔 ──────────────────────────────────────────────────────────────
 
@@ -217,14 +221,19 @@ export default function App() {
       }
     } catch (err: unknown) {
       const errText = err instanceof Error ? err.message : String(err);
+      // API 키 미설정 에러이면 설정 모달 자동 오픈.
+      const isApiKeyError = errText.includes("API 키") || errText.includes("api_key") || errText.includes("set_api_key");
       const agentMsg: ChatMessage = {
         id:      nextId(),
         role:    "agent",
-        text:    errText,
+        text:    isApiKeyError
+          ? "API 키가 설정되지 않았습니다. 설정(⚙)에서 Anthropic API 키를 입력해 주세요."
+          : errText,
         isError: true,
       };
       setMessages((prev) => [...prev, agentMsg]);
       setAgentState("idle");
+      if (isApiKeyError) setShowSettings(true);
     }
   }
 
@@ -253,7 +262,7 @@ export default function App() {
 
   return (
     <>
-      <Topbar folderPath={folderPath} onFolderSelect={selectAndScan} />
+      <Topbar folderPath={folderPath} onFolderSelect={selectAndScan} onSettingsOpen={() => setShowSettings(true)} />
       <div className="shell">
         <aside className="sidebar">
           <div className="side-head">폴더 트리</div>
@@ -348,6 +357,10 @@ export default function App() {
           onExecuted={handleExecuted}
           onCancel={() => { setPendingPlan(null); setAgentState("idle"); }}
         />
+      )}
+
+      {showSettings && (
+        <SettingsModal onClose={() => setShowSettings(false)} />
       )}
 
       {pendingRuleChange && folderPath && (

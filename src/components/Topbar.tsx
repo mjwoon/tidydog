@@ -22,11 +22,12 @@ function DogMark() {
 }
 
 interface Props {
-  folderPath: string | null;
+  folderPath:     string | null;
   onFolderSelect: () => void;
+  onSettingsOpen: () => void;
 }
 
-export function Topbar({ folderPath, onFolderSelect }: Props) {
+export function Topbar({ folderPath, onFolderSelect, onSettingsOpen }: Props) {
   const displayPath = folderPath
     ? folderPath.replace(/^\/Users\/[^/]+/, "~")
     : null;
@@ -45,7 +46,8 @@ export function Topbar({ folderPath, onFolderSelect }: Props) {
         )}
       </div>
       <div className="spacer" />
-      <div className="icon-btn" title="설정">⚙</div>
+      <div className="icon-btn" title="설정" onClick={onSettingsOpen}
+        style={{ cursor: "pointer" }}>⚙</div>
     </div>
   );
 }
