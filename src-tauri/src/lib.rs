@@ -2,6 +2,7 @@ pub mod agent;
 mod db;
 pub mod fileops;
 mod guard;
+pub mod keyutil;
 pub mod organizer;
 pub mod reader;
 pub mod rule_change;
@@ -266,15 +267,8 @@ fn index_file_content(
         }
     }
 
-    // Locate sidecar/reader.py relative to current working directory.
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let script_path = cwd.join("sidecar/reader.py");
-    if !script_path.exists() {
-        return Err(format!(
-            "sidecar not found at expected location: {}",
-            script_path.display()
-        ));
-    }
+    // Locate sidecar/reader.py (cwd/../sidecar/CARGO_MANIFEST_DIR 후보 탐색).
+    let script_path = crate::agent::resolve_sidecar()?;
 
     // Read content via sidecar.
     let file_path = std::path::Path::new(&path);
@@ -535,11 +529,8 @@ fn chat(
     fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
     let conn = db::init_db(&app_data_dir)?;
 
-    // N2: API 키 키체인 조회.
-    let api_key = keyring::Entry::new("tidydog", "anthropic_api_key")
-        .map_err(|e| format!("keyring 오류: {e}"))?
-        .get_password()
-        .map_err(|e| format!("API 키가 없습니다. 설정에서 먼저 입력하세요: {e}"))?;
+    // N2: env fallback(개발 주입) → OS 키체인(최종 사용자) 순서로 조회.
+    let api_key = keyutil::get_api_key()?;
 
     // 대화 히스토리에 현재 메시지 추가.
     let mut messages = history;
@@ -548,7 +539,9 @@ fn chat(
         "content": message
     }));
 
-    let client = agent::ClaudeClient { api_key };
+    // 활성 대상 경로를 시스템 컨텍스트로 관통 — 빈 문자열이면 대상 없음.
+    let target_dir = if root.trim().is_empty() { None } else { Some(root.clone()) };
+    let client = agent::ClaudeClient { api_key, target_dir };
     let result = agent::run_agent_loop(
         &client,
         &conn,
@@ -630,6 +623,9 @@ fn recover_inflight(conn: &rusqlite::Connection, staging_dir: &std::path::Path) 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // .env 파일 로딩 (없으면 무시). 개발 편의용 — 커밋 금지(.gitignore 관리).
+    dotenvy::dotenv().ok();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

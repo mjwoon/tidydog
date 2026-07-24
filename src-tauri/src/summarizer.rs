@@ -6,6 +6,10 @@
 use rusqlite::params;
 use tidydog_core::{ContentChunk, SummaryError, SummaryHints, SummaryResult, Summarizer};
 
+/// Claude model used for file summarization.
+/// Upgrade to `claude-sonnet-4-6` here if summarizer needs higher quality.
+pub const SUMMARIZER_MODEL: &str = "claude-haiku-4-5-20251001";
+
 /// CloudSummarizer calls the Claude API to produce summaries.
 /// It holds only a DB connection reference; the API key is looked up from the
 /// OS keychain on every call (N2).
@@ -84,7 +88,7 @@ impl<'a> CloudSummarizer<'a> {
         );
 
         let body = serde_json::json!({
-            "model": "claude-haiku-4-5-20251001",
+            "model": SUMMARIZER_MODEL,
             "max_tokens": 256,
             "messages": [
                 {
@@ -316,12 +320,9 @@ impl<'a> Summarizer for CloudSummarizer<'a> {
             }
         }
 
-        // N2: Look up API key from OS keychain on every call; never stored in struct.
-        let entry = keyring::Entry::new("tidydog", "anthropic_api_key")
-            .map_err(|_| SummaryError::ApiError("no API key stored — use set_api_key command".to_string()))?;
-        let api_key = entry
-            .get_password()
-            .map_err(|_| SummaryError::ApiError("no API key stored — use set_api_key command".to_string()))?;
+        // N2: env fallback(개발 주입) → OS 키체인(최종 사용자) 순서로 조회.
+        let api_key = crate::keyutil::get_api_key()
+            .map_err(|e| SummaryError::ApiError(e))?;
 
         // Call the API.
         let result = self.call_api(chunk, &hints, &api_key)?;

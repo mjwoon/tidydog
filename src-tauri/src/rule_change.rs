@@ -87,16 +87,22 @@ pub fn propose_rule_change_tool(
     conn: &rusqlite::Connection,
     root: &str,
 ) -> Result<Value, String> {
-    // N2: API 키 조회.
-    let api_key = keyring::Entry::new("tidydog", "anthropic_api_key")
-        .map_err(|e| format!("keyring 오류: {e}"))?
-        .get_password()
-        .map_err(|e| format!("API 키 없음 — set_api_key로 먼저 저장하세요: {e}"))?;
+    // N2: env fallback(개발 주입) → OS 키체인(최종 사용자) 순서로 조회.
+    let api_key = crate::keyutil::get_api_key()?;
 
-    // ORGANIZER.md 읽기.
+    // ORGANIZER.md 읽기. 최초 생성 케이스: 파일이 없으면 빈 내용을 기준으로 삼는다
+    // (diff의 before=""; 승인 시 apply가 파일을 새로 만든다).
     let organizer_path = std::path::Path::new(root).join("ORGANIZER.md");
-    let before_content = std::fs::read_to_string(&organizer_path)
-        .map_err(|e| format!("ORGANIZER.md 읽기 실패 ({}): {e}", organizer_path.display()))?;
+    let before_content = match std::fs::read_to_string(&organizer_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(format!(
+                "ORGANIZER.md 읽기 실패 ({}): {e}",
+                organizer_path.display()
+            ))
+        }
+    };
 
     // LLM 호출 → 새 내용 + 요약 카드.
     let (after_content, summary_cards) =
@@ -251,19 +257,30 @@ pub fn apply_rule_change_inner(
         )
         .map_err(|e| format!("rule_change_id '{rule_change_id}' 를 찾을 수 없음 (pending): {e}"))?;
 
-    // 2. 백업 (타임스탬프 접미).
+    // 2. 백업 (타임스탬프 접미). R4: 반영 전 기존 파일 보존.
+    //    단, 최초 생성(파일 부재) 시에는 백업할 대상이 없으므로 건너뛴다.
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let backup_name = format!("ORGANIZER.md.bak.{now_secs}");
-    let backup_path = organizer_path
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .join(&backup_name);
-    std::fs::copy(organizer_path, &backup_path)
-        .map_err(|e| format!("ORGANIZER.md 백업 실패 → {}: {e}", backup_path.display()))?;
+    let backup_path = if organizer_path.exists() {
+        let backup_name = format!("ORGANIZER.md.bak.{now_secs}");
+        let path = organizer_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join(&backup_name);
+        std::fs::copy(organizer_path, &path)
+            .map_err(|e| format!("ORGANIZER.md 백업 실패 → {}: {e}", path.display()))?;
+        Some(path)
+    } else {
+        // 최초 생성: 상위 디렉터리 보장.
+        if let Some(parent) = organizer_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("ORGANIZER.md 디렉터리 생성 실패: {e}"))?;
+        }
+        None
+    };
 
     // 3. 새 내용 기록.
     std::fs::write(organizer_path, &after_content)
@@ -278,7 +295,8 @@ pub fn apply_rule_change_inner(
 
     Ok(json!({
         "rule_change_id": rule_change_id,
-        "backup_path":    backup_path.to_string_lossy(),
+        "backup_path":    backup_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        "created":        backup_path.is_none(), // true면 최초 생성(백업 없음)
         "applied_at":     now_secs,
     }))
 }
@@ -408,6 +426,53 @@ mod tests {
         let status: String = conn
             .query_row(
                 "SELECT status FROM rule_changes WHERE rule_change_id = 'rc-test-007'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "applied");
+    }
+
+    // ── 최초 생성: ORGANIZER.md 부재 시 백업 없이 새로 만든다 ────────────────
+
+    #[test]
+    fn apply_creates_organizer_when_absent_without_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let organizer = tmp.path().join("ORGANIZER.md");
+        assert!(!organizer.exists(), "사전 조건: 파일이 없어야 함");
+
+        let after_content = "tag:스크린샷 -> 사진/스크린샷\n";
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO rule_changes \
+             (rule_change_id, created_at, status, natural_language, \
+              before_content, after_content, diff_text, summary_cards) \
+             VALUES ('rc-first', 1000, 'pending', 'test', '', ?1, '', '[]')",
+            rusqlite::params![after_content],
+        )
+        .unwrap();
+
+        let result = apply_rule_change_inner("rc-first", &conn, &organizer).unwrap();
+
+        // 파일이 새로 생성되고 내용이 기록됨.
+        let written = fs::read_to_string(&organizer).unwrap();
+        assert_eq!(written, after_content, "최초 생성: 새 내용이 기록되어야 함");
+
+        // 백업은 없어야 함(백업 대상 부재).
+        assert!(result["backup_path"].is_null(), "최초 생성 시 backup_path는 null");
+        assert_eq!(result["created"], serde_json::json!(true), "created=true 여야 함");
+
+        // 백업 파일이 디렉터리에 생기지 않았는지 확인.
+        let bak_count = fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".bak."))
+            .count();
+        assert_eq!(bak_count, 0, "최초 생성 시 .bak 파일이 생기면 안 됨");
+
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM rule_changes WHERE rule_change_id = 'rc-first'",
                 [],
                 |row| row.get(0),
             )
