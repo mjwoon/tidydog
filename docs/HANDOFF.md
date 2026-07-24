@@ -69,22 +69,25 @@ repo 명명 기준 **p0**(스캐폴딩) ~ **p5b**(ORGANIZER 규칙 학습)까지
 
 ## 3. 미해결 버그 (다음 작업 후보)
 
-### 🔴 B1 — "완료 — 이동 undefined개 · 격리 undefined개 · 리네임 undefined개"
+### ✅ B1 (해결됨 — commit 1bc34da) — "완료 — 이동 undefined개 · 격리 undefined개 · 리네임 undefined개"
 
-플랜 제안 직후 챗에 뜨는 메시지. **두 문제가 겹쳐 있다.**
+**(b) confirm 게이트 위반 = 코드로 배제됨.** "완료" emit은 `App.tsx handleExecuted` 한 곳뿐이고,
+그 경로는 `PlanReview` "실행" 버튼 → `confirm_plan`(승인 게이트) → `execute_plan` 성공 후로만 도달한다.
+자동·에이전트 경로 없음(I1 회귀테스트 `i1_execute_not_in_tool_catalog`가 execute/execute_plan을 툴
+카탈로그에서 배제). 사용자가 승인하지 않으면 이 메시지는 물리적으로 못 뜬다. ※ 옛 추정 "승인 UI
+미경유"는 코드와 모순 — 첫 op에서 실패하면 파일이 거의 안 옮겨져 "트리 미변경"으로 보였을 뿐, 실행은 시도됐다.
 
-- **undefined 노출**: 바로 위 플랜 카드는 "이동 0개 · 격리 5개"를 정확히 표시하는데,
-  이 메시지만 같은 값을 `undefined`로 읽는다. → 두 메시지가 서로 다른 필드명/경로로
-  요약 카운트를 참조하고 있다. 요약 필드는 `op_count`/`move_count`/`stage_count` 등이 있음.
-- **"완료"라는 단어**: 승인 전인데 "완료"라고 표시된다. 두 경우 중 하나:
-  - (a) 문구 오류 — 플랜 *제안*을 "완료"로 잘못 표현. → 문구만 수정.
-  - (b) 실제로 뭔가 실행됨 — **이 경우 confirm 게이트 위반이며 심각.**
+**근본 원인 = 부분실패 분기 미처리.** `execute_plan`은 성공 시 `moved/staged/renamed`를, `PartialExecute`
+시 `completed/failed_op/error`를 반환하는데, 프론트가 `partial`을 무시하고 무조건 `onExecuted`를 불러
+undefined 카운트 + "완료" 오보를 냈다(즉 부분실패를 성공으로 표시).
 
-  (b)일 가능성은 낮다(트리 미변경, 승인 UI 미경유). 하지만 **반드시 코드로 확인하고 넘어갈 것.**
-  안전 게이트가 걸린 앱에서 "완료"가 승인 전에 나오는 것을 문구 문제로 단정하지 마라.
+**수정:** `types.ts`에 `ExecPlanResponse` 판별 유니온 도입(→ `partial` 분기 강제, undefined 접근 컴파일
+차단 = FE 하니스 없는 대신 타입 회귀 가드). `PlanReview`는 partial이면 모달 유지 + caution 배너 +
+[되돌리기(`undo_plan`, I2 사용자 트리거)][닫기]. `App`에 `handleUndone`/`handlePartialClose`(메시지 +
+트리 재스캔) 추가. 검증: `tsc` OK, 백엔드 미변경(cargo 56 passed).
 
-**진단 순서**: 이 메시지를 emit하는 지점을 찾아라 → 어떤 이벤트에 반응하는가
-(플랜 제안? 실행 결과?) → 참조하는 필드명이 실제 payload와 맞는가 → (b) 배제 확인.
+**남은 한계:** partial 경로의 *런타임* 동작은 미검증(op이 실행 중간 실패해야 트리거 — 수동 재현 난이도 높음).
+성공 경로·빈 플랜 육안 확인은 §4에 포함.
 
 ### 🟡 B2 — 플랜에 move op가 0개
 
@@ -127,8 +130,8 @@ repo 명명 기준 **p0**(스캐폴딩) ~ **p5b**(ORGANIZER 규칙 학습)까지
 
 ## 6. 다음 단계 제안
 
-1. **B1 진단** (완료/undefined) — 특히 (b) 배제 확인. 안전 관련이라 최우선.
-2. **남은 육안 확인 2건** → p4 공식 클로즈
+1. ~~**B1 진단**~~ → **해결됨 (commit 1bc34da)**. (b) 게이트 위반 배제 + 부분실패 분기 수정.
+2. **남은 육안 확인 2건** → p4 공식 클로즈  ← **현재 최우선**
 3. **P-3 ADR + 워크로그 작성** — 결정 근거가 아직 살아있을 때
 4. 그다음 데몬+캘린더+마스코트 슬라이스(repo에 아직 plan·commit 없음 — 번호 미정;
    repo의 p5b는 이미 규칙학습이 점유하므로 "Phase 5"로 부르지 말 것) 또는 P-1/P-2 신뢰성 작업
