@@ -13,6 +13,13 @@ export interface ExecResult {
   renamed: number;
 }
 
+// execute_plan Tauri 커맨드 응답 — 성공/부분실패 판별 유니온.
+// 부분실패(GateError::PartialExecute)는 moved/staged/renamed 대신
+// completed/failed_op/error 를 담는다. `partial` 로 분기해야 undefined 오보를 막는다.
+export type ExecPlanResponse =
+  | { partial: false; plan_id: string; moved: number; staged: number; renamed: number }
+  | { partial: true; plan_id: string; completed: number; failed_op: string; error: string };
+
 // ── Phase 4: 챗 타입 ─────────────────────────────────────────────────────────
 
 export type AgentState = "idle" | "thinking" | "done";

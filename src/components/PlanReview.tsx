@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { PlanOp } from "../types";
+import { PlanOp, ExecPlanResponse } from "../types";
 
 export interface PlanSummary {
   plan_id: string;
@@ -13,6 +14,8 @@ interface Props {
   plan: PlanSummary;
   root: string;
   onExecuted: (result: { moved: number; staged: number; renamed: number }) => void;
+  onUndone: () => void;
+  onPartialClose: (info: { completed: number; failed_op: string; error: string }) => void;
   onCancel: () => void;
 }
 
@@ -77,18 +80,37 @@ function groupOps(ops: PlanOp[], root: string): OpGroup[] {
   return [...map.values()].sort((a, b) => Number(a.isStage) - Number(b.isStage));
 }
 
-export function PlanReview({ plan, root, onExecuted, onCancel }: Props) {
+export function PlanReview({ plan, root, onExecuted, onUndone, onPartialClose, onCancel }: Props) {
+  // 부분실패(PartialExecute) 시 모달을 유지하고 배너로 알린 뒤 되돌리기/닫기를 제공.
+  const [partialFail, setPartialFail] = useState<{ completed: number; failed_op: string; error: string } | null>(null);
+  const [undoing, setUndoing] = useState(false);
+
   async function handleExecute() {
     try {
       await invoke("confirm_plan", { planId: plan.plan_id });
-      const result = await invoke<{ plan_id: string; moved: number; staged: number; renamed: number }>(
-        "execute_plan",
-        { planId: plan.plan_id, root }
-      );
-      onExecuted({ moved: result.moved, staged: result.staged, renamed: result.renamed });
+      const result = await invoke<ExecPlanResponse>("execute_plan", { planId: plan.plan_id, root });
+      if (result.partial) {
+        // 일부 op만 완료되고 중단됨. moved/staged/renamed 가 없으므로 "완료"로 오보하면 안 된다.
+        setPartialFail({ completed: result.completed, failed_op: result.failed_op, error: result.error });
+      } else {
+        onExecuted({ moved: result.moved, staged: result.staged, renamed: result.renamed });
+      }
     } catch (err) {
       console.error("execute_plan failed:", err);
       alert(`실행 실패: ${err}`);
+    }
+  }
+
+  // I2: undo 는 사용자 트리거 전용. 이 버튼 클릭이 사용자 트리거이며 에이전트 자동 되돌림이 아니다.
+  async function handleUndo() {
+    setUndoing(true);
+    try {
+      await invoke("undo_plan", { planId: plan.plan_id });
+      onUndone();
+    } catch (err) {
+      console.error("undo_plan failed:", err);
+      alert(`되돌리기 실패: ${err}`);
+      setUndoing(false);
     }
   }
 
@@ -234,37 +256,86 @@ export function PlanReview({ plan, root, onExecuted, onCancel }: Props) {
           )}
         </div>
 
+        {/* 부분실패 배너 — moved/staged 없이 completed/failed_op/error 만 온다 */}
+        {partialFail && (
+          <div style={{
+            margin: "0 24px 4px", padding: "12px 14px",
+            background: "var(--caution-soft)", borderRadius: "var(--r-sm)",
+            fontSize: 13, lineHeight: 1.55,
+          }}>
+            <div style={{ fontWeight: 700, color: "var(--caution)" }}>일부만 처리되고 중단됐어요</div>
+            <div style={{ marginTop: 4, color: "var(--ink)" }}>
+              {partialFail.completed}개 처리 후{" "}
+              <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{partialFail.failed_op}</span>
+              에서 실패: {partialFail.error}
+            </div>
+            <div style={{ marginTop: 4, color: "var(--muted)" }}>
+              처리된 항목은 되돌리거나 그대로 닫을 수 있어요.
+            </div>
+          </div>
+        )}
+
         {/* footer */}
         <div style={{
           padding: "16px 24px",
           borderTop: "1px solid var(--line)",
           display: "flex", gap: 10, justifyContent: "flex-end",
         }}>
-          <button
-            onClick={onCancel}
-            style={{
-              padding: "9px 18px", borderRadius: "var(--r-sm)",
-              border: "1px solid var(--line)", background: "var(--surface)",
-              cursor: "pointer", fontSize: 13.5, fontWeight: 600,
-              fontFamily: "var(--ui)", color: "var(--ink)",
-            }}
-          >
-            {isEmpty ? "닫기" : "취소"}
-          </button>
-          {!isEmpty && (
-            <button
-              onClick={handleExecute}
-              style={{
-                padding: "9px 20px", borderRadius: "var(--r-sm)",
-                border: "none",
-                background: isHighRisk ? "var(--caution)" : "var(--primary)",
-                color: "#fff",
-                cursor: "pointer", fontSize: 13.5, fontWeight: 700,
-                fontFamily: "var(--ui)",
-              }}
-            >
-              {isHighRisk ? "위험 확인 후 실행" : "실행"}
-            </button>
+          {partialFail ? (
+            <>
+              <button
+                onClick={() => onPartialClose(partialFail)}
+                style={{
+                  padding: "9px 18px", borderRadius: "var(--r-sm)",
+                  border: "1px solid var(--line)", background: "var(--surface)",
+                  cursor: "pointer", fontSize: 13.5, fontWeight: 600,
+                  fontFamily: "var(--ui)", color: "var(--ink)",
+                }}
+              >
+                닫기
+              </button>
+              <button
+                onClick={handleUndo}
+                disabled={undoing}
+                style={{
+                  padding: "9px 20px", borderRadius: "var(--r-sm)",
+                  border: "none", background: "var(--primary)", color: "#fff",
+                  cursor: undoing ? "default" : "pointer", fontSize: 13.5, fontWeight: 700,
+                  fontFamily: "var(--ui)", opacity: undoing ? 0.7 : 1,
+                }}
+              >
+                {undoing ? "되돌리는 중…" : "되돌리기"}
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={onCancel}
+                style={{
+                  padding: "9px 18px", borderRadius: "var(--r-sm)",
+                  border: "1px solid var(--line)", background: "var(--surface)",
+                  cursor: "pointer", fontSize: 13.5, fontWeight: 600,
+                  fontFamily: "var(--ui)", color: "var(--ink)",
+                }}
+              >
+                {isEmpty ? "닫기" : "취소"}
+              </button>
+              {!isEmpty && (
+                <button
+                  onClick={handleExecute}
+                  style={{
+                    padding: "9px 20px", borderRadius: "var(--r-sm)",
+                    border: "none",
+                    background: isHighRisk ? "var(--caution)" : "var(--primary)",
+                    color: "#fff",
+                    cursor: "pointer", fontSize: 13.5, fontWeight: 700,
+                    fontFamily: "var(--ui)",
+                  }}
+                >
+                  {isHighRisk ? "위험 확인 후 실행" : "실행"}
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>

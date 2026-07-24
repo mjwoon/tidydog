@@ -86,6 +86,36 @@ export default function App() {
     }
   }
 
+  // 부분실패 후 사용자가 모달에서 되돌리기를 선택.
+  function handleUndone() {
+    setPendingPlan(null);
+    setLastResult(null);
+    setAgentState("idle");
+    setMessages((prev) => [...prev, {
+      id: nextId(), role: "agent",
+      text: "되돌렸습니다 — 방금 실행한 정리를 취소하고 원래 위치로 복원했어요.",
+    }]);
+    if (folderPath) {
+      invoke<FileNode>("scan_directory", { root: folderPath, maxDepth: 10 })
+        .then(setTree).catch(console.error);
+    }
+  }
+
+  // 부분실패 후 사용자가 되돌리지 않고 닫기를 선택. 처리된 항목은 반영해 재스캔.
+  function handlePartialClose(info: { completed: number; failed_op: string; error: string }) {
+    setPendingPlan(null);
+    setAgentState("idle");
+    setMessages((prev) => [...prev, {
+      id: nextId(), role: "agent",
+      text: `정리가 일부만 적용된 채 중단됐어요 — ${info.completed}개 처리 후 실패: ${info.error}. 되돌리려면 /undo 를 입력하세요.`,
+      isError: true,
+    }]);
+    if (folderPath) {
+      invoke<FileNode>("scan_directory", { root: folderPath, maxDepth: 10 })
+        .then(setTree).catch(console.error);
+    }
+  }
+
   function openPlanModal(plan: ProposedPlan) {
     setPendingPlan({
       plan_id:    plan.plan_id,
@@ -357,6 +387,8 @@ export default function App() {
           plan={pendingPlan}
           root={folderPath}
           onExecuted={handleExecuted}
+          onUndone={handleUndone}
+          onPartialClose={handlePartialClose}
           onCancel={() => { setPendingPlan(null); setAgentState("idle"); }}
         />
       )}
