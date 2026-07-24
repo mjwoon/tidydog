@@ -92,6 +92,7 @@ export default function App() {
       risk_score: plan.risk_score,
       preview:    plan.preview as "auto" | "standard" | "full_review",
       op_count:   plan.op_count,
+      ops:        plan.ops,
     });
   }
 
@@ -161,6 +162,7 @@ export default function App() {
             stage_count: response.stage_count!,
             risk_score:  response.risk_score!,
             preview:     response.preview!,
+            ops:         response.ops ?? [],
           };
           const agentMsg: ChatMessage = {
             id:   nextId(),

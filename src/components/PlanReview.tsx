@@ -1,15 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-
-export interface PlanOp {
-  op_id: string;
-  seq: number;
-  action: "move" | "stage" | "rename";
-  content_hash: string;
-  from: string;
-  to: string;
-  conflict: "none" | "rename";
-  reason?: string;
-}
+import { PlanOp } from "../types";
 
 export interface PlanSummary {
   plan_id: string;
@@ -35,12 +25,56 @@ function actionLabel(a: string) {
 
 function actionBadgeStyle(a: string): React.CSSProperties {
   if (a === "stage") return { background: "var(--caution-soft)", color: "var(--caution)" };
-  if (a === "rename") return { background: "var(--primary-soft)", color: "var(--primary)" };
-  return { background: "var(--surface-2)", color: "var(--muted)" };
+  if (a === "rename") return { background: "var(--caution-soft)", color: "var(--caution)" };
+  return { background: "var(--primary-soft)", color: "var(--primary)" }; // move
 }
 
 function shortPath(p: string) {
   return p.replace(/^\/Users\/[^/]+/, "~");
+}
+
+function basename(p: string) {
+  const parts = p.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? p;
+}
+
+function dirname(p: string) {
+  const idx = p.lastIndexOf("/");
+  return idx > 0 ? p.slice(0, idx) : p;
+}
+
+// root 접두를 제거해 상대 목적지로 표시. 실패 시 홈 축약으로 폴백.
+function relTo(p: string, root: string) {
+  if (root && p.startsWith(root)) {
+    const rel = p.slice(root.length).replace(/^\/+/, "");
+    return rel || basename(p);
+  }
+  return shortPath(p);
+}
+
+interface OpGroup {
+  key:     string;   // 그룹 식별자
+  dest:    string;   // 헤더에 표시할 목적지 경로
+  isStage: boolean;
+  ops:     PlanOp[];
+}
+
+// 목적지 디렉터리 기준으로 op 를 묶는다. 격리(stage)는 별도 그룹.
+function groupOps(ops: PlanOp[], root: string): OpGroup[] {
+  const map = new Map<string, OpGroup>();
+  for (const op of ops) {
+    const isStage = op.action === "stage";
+    const destDir = isStage ? "격리" : relTo(dirname(op.to), root);
+    const key = isStage ? "__stage__" : destDir;
+    let g = map.get(key);
+    if (!g) {
+      g = { key, dest: destDir, isStage, ops: [] };
+      map.set(key, g);
+    }
+    g.ops.push(op);
+  }
+  // 이동/리네임 그룹 먼저, 격리 그룹은 마지막.
+  return [...map.values()].sort((a, b) => Number(a.isStage) - Number(b.isStage));
 }
 
 export function PlanReview({ plan, root, onExecuted, onCancel }: Props) {
@@ -60,6 +94,7 @@ export function PlanReview({ plan, root, onExecuted, onCancel }: Props) {
 
   const riskPct = Math.round(plan.risk_score * 100);
   const isHighRisk = plan.risk_score >= 0.5;
+  const isEmpty = plan.op_count === 0 || !plan.ops || plan.ops.length === 0;
 
   return (
     <div style={{
@@ -100,50 +135,101 @@ export function PlanReview({ plan, root, onExecuted, onCancel }: Props) {
           >×</button>
         </div>
 
-        {/* ops list */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
+        {/* ops list — 목적지 디렉터리별 그루핑 */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
           {plan.ops && plan.ops.length > 0 ? (
-            plan.ops.map((op) => (
-              <div key={op.op_id} style={{
-                padding: "10px 12px",
-                borderRadius: "var(--r-sm)",
-                marginBottom: 6,
-                background: "var(--surface-2)",
-                fontSize: 13,
-              }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                  <span style={{
-                    ...actionBadgeStyle(op.action),
-                    padding: "2px 8px", borderRadius: 999,
-                    fontSize: 11.5, fontWeight: 600,
+            groupOps(plan.ops, root).map((group, gi) => (
+              <div key={group.key}>
+                {gi > 0 && <div style={{ height: 1, background: "var(--line)", margin: "6px 22px" }} />}
+                <div style={{ padding: "8px 22px" }}>
+                  {/* group head */}
+                  <div style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    fontSize: 12.5, fontWeight: 700, padding: "8px 2px",
+                    color: group.isStage ? "var(--caution)" : "var(--muted)",
                   }}>
-                    {actionLabel(op.action)}
-                  </span>
-                  {op.conflict === "rename" && (
                     <span style={{
-                      background: "var(--caution-soft)", color: "var(--caution)",
-                      padding: "2px 8px", borderRadius: 999, fontSize: 11.5, fontWeight: 600,
+                      fontFamily: "var(--mono)", fontSize: 12, fontWeight: 500,
+                      color: group.isStage ? "var(--caution)" : "var(--ink)",
                     }}>
-                      충돌 → 리네임
+                      {group.isStage ? "격리" : `${group.dest}/`}
                     </span>
-                  )}
-                  {op.reason && (
-                    <span style={{ color: "var(--muted)", fontSize: 12 }}>{op.reason}</span>
-                  )}
-                </div>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)" }}>
-                  {shortPath(op.from)}
-                </div>
-                {op.action !== "stage" && (
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--primary)", marginTop: 2 }}>
-                    → {shortPath(op.to)}
+                    {group.isStage && (
+                      <span style={{ fontWeight: 500, opacity: 0.85 }}>
+                        · 삭제하지 않고 따로 보관해요
+                      </span>
+                    )}
+                    <span style={{ marginLeft: "auto", fontWeight: 600 }}>{group.ops.length}</span>
                   </div>
-                )}
+
+                  {/* ops */}
+                  {group.ops.map((op) => (
+                    <div key={op.op_id || `${op.from}->${op.to}`} style={{
+                      display: "flex", alignItems: "flex-start", gap: 12,
+                      padding: "11px 12px", borderRadius: "var(--r-sm)",
+                    }}>
+                      <span style={{ fontSize: 17, lineHeight: 1.4, flex: "none" }}>📄</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600 }}>
+                          {basename(op.from)}
+                          {op.reason && (
+                            <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: 13 }}>
+                              {" · "}{op.reason}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{
+                          marginTop: 5, display: "flex", alignItems: "center", gap: 9,
+                          fontFamily: "var(--mono)", fontSize: 12.5,
+                        }}>
+                          <span style={{ color: "var(--muted)" }}>{relTo(dirname(op.from), root)}</span>
+                          {op.action !== "stage" && (
+                            <>
+                              <span style={{ color: group.isStage ? "var(--caution)" : "var(--primary)", fontWeight: 600 }}>→</span>
+                              <span style={{ color: "var(--ink)" }}>{relTo(dirname(op.to), root)}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{ flex: "none", display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end", alignSelf: "center" }}>
+                        <span style={{
+                          ...actionBadgeStyle(op.action),
+                          fontSize: 11.5, fontWeight: 700,
+                          padding: "4px 9px", borderRadius: 7,
+                        }}>
+                          {actionLabel(op.action)}
+                        </span>
+                        {op.conflict !== "none" && (
+                          <span
+                            title="같은 이름의 파일이 이미 있어 덮어쓰지 않고 이름을 바꿔 옮깁니다"
+                            style={{
+                              background: "var(--caution-soft)", color: "var(--caution)",
+                              fontSize: 11, fontWeight: 700,
+                              padding: "3px 8px", borderRadius: 7, whiteSpace: "nowrap",
+                            }}
+                          >
+                            ⚠ 이름충돌
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             ))
           ) : (
-            <div style={{ padding: "16px", color: "var(--muted)", fontSize: 13, textAlign: "center" }}>
-              {plan.op_count}개 작업 준비됨
+            <div style={{ padding: "40px 24px", color: "var(--muted)", fontSize: 13.5, textAlign: "center", lineHeight: 1.6 }}>
+              {plan.op_count === 0 ? (
+                <>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", marginBottom: 4 }}>
+                    제안할 이동이 없습니다
+                  </div>
+                  <div>지금 정리 위치가 이미 적절해 옮길 파일이 없어요.</div>
+                </>
+              ) : (
+                // 방어적 폴백: op_count>0인데 ops가 안 온 경우(전달 체인 회귀 신호).
+                `${plan.op_count}개 작업 준비됨`
+              )}
             </div>
           )}
         </div>
@@ -163,21 +249,23 @@ export function PlanReview({ plan, root, onExecuted, onCancel }: Props) {
               fontFamily: "var(--ui)", color: "var(--ink)",
             }}
           >
-            취소
+            {isEmpty ? "닫기" : "취소"}
           </button>
-          <button
-            onClick={handleExecute}
-            style={{
-              padding: "9px 20px", borderRadius: "var(--r-sm)",
-              border: "none",
-              background: isHighRisk ? "var(--caution)" : "var(--primary)",
-              color: "#fff",
-              cursor: "pointer", fontSize: 13.5, fontWeight: 700,
-              fontFamily: "var(--ui)",
-            }}
-          >
-            {isHighRisk ? "위험 확인 후 실행" : "실행"}
-          </button>
+          {!isEmpty && (
+            <button
+              onClick={handleExecute}
+              style={{
+                padding: "9px 20px", borderRadius: "var(--r-sm)",
+                border: "none",
+                background: isHighRisk ? "var(--caution)" : "var(--primary)",
+                color: "#fff",
+                cursor: "pointer", fontSize: 13.5, fontWeight: 700,
+                fontFamily: "var(--ui)",
+              }}
+            >
+              {isHighRisk ? "위험 확인 후 실행" : "실행"}
+            </button>
+          )}
         </div>
       </div>
     </div>

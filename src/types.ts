@@ -26,6 +26,17 @@ export interface ChatMessage {
   isError?:    boolean;
 }
 
+export interface PlanOp {
+  op_id:        string;
+  seq:          number;
+  action:       "move" | "stage" | "rename";
+  content_hash: string;
+  from:         string;
+  to:           string;
+  conflict:     "none" | "rename";
+  reason?:      string;
+}
+
 export interface ProposedPlan {
   plan_id:     string;
   op_count:    number;
@@ -33,6 +44,7 @@ export interface ProposedPlan {
   stage_count: number;
   risk_score:  number;
   preview:     string;
+  ops:         PlanOp[];
 }
 
 export interface SummaryCard {
@@ -66,6 +78,7 @@ export interface ChatResponse {
   stage_count?:     number;
   risk_score?:      number;
   preview?:         string;
+  ops?:             PlanOp[];
   // rule_proposed 필드
   rule_change_id?:  string;
   summary_cards?:   SummaryCard[];

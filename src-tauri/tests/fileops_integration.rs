@@ -54,7 +54,7 @@ fn move_file_same_volume() {
 fn conflict_on_existing_destination() {
     let ws = tmp_ws();
     let src = ws.join("a.txt");
-    let dst = ws.join("a.txt"); // same path = overwrite attempt blocked at gate level,
+    let _dst = ws.join("a.txt"); // same path = overwrite attempt blocked at gate level,
     // but move_file itself doesn't know about gate conflict logic.
     // Here we just verify move works when dst doesn't exist.
     let dst2 = ws.join("b.txt");
