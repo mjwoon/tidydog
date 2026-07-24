@@ -1,5 +1,6 @@
 import { useRef, useEffect } from "react";
 import { ChatMessage, ProposedPlan, RuleChange } from "../types";
+import { MarkdownMessage } from "./MarkdownMessage";
 
 interface Props {
   messages:     ChatMessage[];
@@ -126,11 +127,13 @@ function Bubble({
               : "var(--ink)",
           fontSize: 14,
           lineHeight: 1.55,
-          whiteSpace: "pre-wrap",
+          // 마크다운 렌더 대상(assistant 평문 메시지)은 요소 마진이 줄바꿈을 관리하므로 pre-wrap 제외.
+          whiteSpace: isUser || msg.isError ? "pre-wrap" : "normal",
           wordBreak: "break-word",
         }}
       >
-        {msg.text}
+        {/* assistant(비-에러) 메시지만 마크다운 렌더. 사용자/에러 메시지는 평문 유지. */}
+        {!isUser && !msg.isError ? <MarkdownMessage text={msg.text} /> : msg.text}
       </div>
       {msg.plan && (
         <div style={{ maxWidth: "80%" }}>

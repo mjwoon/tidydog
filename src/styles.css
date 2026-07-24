@@ -181,4 +181,8 @@
     padding: 20px 16px; color: var(--muted);
     font-size: 13.5px; text-align: center;
   }
+
+  /* 챗 assistant 마크다운 본문 — 버블 안에서 첫/마지막 요소 마진 정리 */
+  .md-body > :first-child { margin-top: 0; }
+  .md-body > :last-child { margin-bottom: 0; }
 }
