@@ -16,10 +16,36 @@ const AGENT_MODEL: &str = "claude-haiku-4-5-20251001";
 const SYSTEM_PROMPT: &str = "당신은 TidyDog의 파일 정리 AI 어시스턴트입니다. \
 사용자의 폴더를 스캔·분석해 정리 플랜을 제안합니다.\n\
 \n\
+■ 두 가지 별개 흐름 — 절대 혼동하지 마라:\n\
+  A) 파일 이동/정리 흐름: propose_plan → (사용자 승인) → 실행.\n\
+     '이 PDF들을 문서/PDF로 옮겨줘' 같은 지금-한-번 정리 요청이 여기 해당.\n\
+  B) 규칙 학습 흐름: propose_rule_change → (사용자 승인) → ORGANIZER.md 반영.\n\
+     '앞으로/항상/매번/기본으로/규칙으로' 같은 습관 변경 요청이 여기 해당.\n\
+  이 둘은 서로 독립이다. 규칙(ORGANIZER.md)은 '플랜 승인 후'에 만들어지는 게 아니다 —\n\
+  규칙은 오직 propose_rule_change 승인으로만 반영된다. 파일 이동이 규칙을 만들지 않고,\n\
+  규칙 반영이 파일을 이동시키지 않는다.\n\
+\n\
+■ 제안은 반드시 '도구 호출'로 하라 (매우 중요):\n\
+  플랜이나 규칙 변경을 텍스트로 나열하거나 말로 설명하고 끝내지 마라.\n\
+  정리가 필요하면 반드시 propose_plan을, 규칙 변경이면 반드시 propose_rule_change를\n\
+  실제 tool_use로 호출하라. '~하겠습니다' 같은 서술로 대체하는 것은 실패다.\n\
+\n\
+■ 삭제/제거 처리 — delete 동작은 존재하지 않는다:\n\
+  삭제/제거/버리기/중복본 정리 의도는 stage(격리) action 으로 표현한다.\n\
+  TidyDog은 파일을 영구 삭제하지 않고 staging(격리)으로 보내며 복원 가능하다.\n\
+  delete/trash 같은 op 는 없다 — '제거'가 필요하면 propose_plan 의 op action 을 stage 로 한다.\n\
+\n\
+■ 현황 조회 vs 플랜 수립 — 도구 역할 분리:\n\
+  현황/목록만 볼 때는 list_files(가벼움, 재스캔 없음). 실제 정리 플랜을 만들 때는\n\
+  scan_directory 로 content_hash 를 확보한 뒤 propose_plan 을 호출한다. 중복본 판정은\n\
+  content_hash 일치로 하므로 플랜 수립 전 scan_directory 를 반드시 거친다.\n\
+\n\
 규칙:\n\
 1. propose_plan으로 플랜을 '제안'만 합니다 — 실행은 사용자 승인 후 처리됩니다.\n\
 2. undo 도구는 사용자가 /undo를 직접 입력할 때만 허용됩니다. 자율 호출 금지.\n\
-3. 필수 순서: scan_directory → read_content(파일마다 반드시 호출) → propose_plan.\n\
+3. 플랜 수립 필수 순서: scan_directory → read_content(파일마다 반드시 호출) → propose_plan.\n\
+   사용자가 정리를 요청하면 이 순서를 끝까지 수행해 propose_plan까지 반드시 호출한다.\n\
+   (단순 현황 조회는 list_files 만으로 답하고 이 순서를 강제하지 않는다.)\n\
 4. read_content로 각 파일의 실제 텍스트를 읽고 주제/도메인을 파악한다.\n\
 5. propose_plan 각 op의 'to' 경로는 반드시 읽은 내용 기반으로 결정한다:\n\
    - 코드·프로그래밍 내용 → {루트}/개발/{파일명}\n\
@@ -31,7 +57,8 @@ const SYSTEM_PROMPT: &str = "당신은 TidyDog의 파일 정리 AI 어시스턴�
 7. 한국어로 응답합니다.\n\
 8. 사용자가 '앞으로도', '항상', '매번', '기본으로', '규칙으로' 같은 분류 습관 변경 패턴을\n\
    표현하면 propose_rule_change 도구를 호출해 ORGANIZER.md 변경안을 제안한다.\n\
-   이 도구는 제안만 하고 파일을 직접 쓰지 않는다(R1). 파일 이동과 규칙 변경은 별개다.";
+   이 도구는 제안만 하고 파일을 직접 쓰지 않는다(R1). ORGANIZER.md가 아직 없어도\n\
+   propose_rule_change는 최초 생성안을 제안할 수 있다.";
 
 // ── 도구 카탈로그 ───────────────────────────────────────────────────────────────
 
@@ -41,13 +68,30 @@ pub fn tool_schemas() -> Vec<Value> {
     vec![
         json!({
             "name": "scan_directory",
-            "description": "폴더를 재귀 스캔해 파일 목록과 content_hash 를 반환한다.",
+            "description": "폴더를 재귀 스캔해 파일 목록과 content_hash 를 반환한다. \
+                           정리 플랜을 수립할 때 사용한다 — propose_plan 의 ops 에 필요한 content_hash 를 \
+                           여기서 얻고, 중복본은 content_hash 일치로 판정한다.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "스캔할 폴더 절대 경로"}
                 },
                 "required": ["path"]
+            }
+        }),
+        json!({
+            "name": "list_files",
+            "description": "이미 스캔되어 DB에 있는 파일 목록을 읽어 반환한다(재스캔하지 않음). \
+                           현재 정리 대상 폴더의 현황(파일 경로·확장자·태그·요약·제안 목적지)을 \
+                           물을 때만 사용한다. 파일시스템을 다시 걷지 않고 DB 행만 읽는 읽기 전용 도구다. \
+                           content_hash 를 반환하지 않으므로 플랜 수립에는 쓰지 않는다 — \
+                           플랜을 만들 때는 scan_directory 를 사용하라. \
+                           path 를 생략하면 현재 정리 대상 폴더 전체를 대상으로 한다.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "조회할 폴더 절대 경로(생략 시 현재 대상)"}
+                }
             }
         }),
         json!({
@@ -78,7 +122,9 @@ pub fn tool_schemas() -> Vec<Value> {
         }),
         json!({
             "name": "propose_plan",
-            "description": "파일 이동/격리/리네임 플랜을 생성한다. 실행하지 않음 — 사용자 승인 후 실행됨.",
+            "description": "파일 이동/격리/리네임 플랜을 생성한다. 실행하지 않음 — 사용자 승인 후 실행됨. \
+                           플랜 수립 전 scan_directory 로 content_hash 를 확보한다(중복본은 해시 일치로 판정). \
+                           삭제/제거 동작은 없다 — 제거 의도는 action=stage 로 표현한다.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -88,8 +134,12 @@ pub fn tool_schemas() -> Vec<Value> {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "action":       {"type": "string", "enum": ["move", "stage", "rename"]},
-                                "content_hash": {"type": "string", "description": "scan_directory 결과의 파일 해시"},
+                                "action":       {"type": "string", "enum": ["move", "stage", "rename"],
+                                                 "description": "move = 다른 폴더로 이동. \
+                                                                 stage = 격리(소프트 삭제) — 삭제/제거/버리기/중복본 처리는 이 값으로 한다(영구삭제 아님, 복원 가능). \
+                                                                 rename = 같은 폴더 내 이름 변경. \
+                                                                 delete/trash 는 존재하지 않는다."},
+                                "content_hash": {"type": "string", "description": "scan_directory 결과의 파일 해시(중복 판정 기준)"},
                                 "from":         {"type": "string", "description": "현재 파일 경로"},
                                 "to":           {"type": "string", "description": "목적 경로 — read_content로 읽은 파일 내용의 주제를 기반으로 결정한다. 예: Python 코드 → {루트}/개발/{파일명}, 레시피 → {루트}/요리/{파일명}, 재무문서 → {루트}/문서/재무/{파일명}"},
                                 "reason":       {"type": "string", "description": "이 작업을 제안하는 이유"}
@@ -150,6 +200,7 @@ pub enum AgentResult {
         stage_count: usize,
         risk_score:  f64,
         preview:     String,
+        ops:         Vec<Value>,
     },
     StepLimitReached {
         partial_message: String,
@@ -175,6 +226,29 @@ pub trait LlmClient {
 
 pub struct ClaudeClient {
     pub api_key: String,
+    /// 현재 활성 정리 대상 폴더. Some 이면 시스템 컨텍스트에 주입되어
+    /// 에이전트가 경로를 되묻지 않고 이 폴더를 대상으로 진행한다.
+    pub target_dir: Option<String>,
+}
+
+/// 활성 대상 경로를 시스템 프롬프트에 덧붙일 컨텍스트 문자열로 만든다.
+/// 대상이 없으면(첫 실행·폴더 미선택) None → 되묻기 분기 안내만 유지.
+fn build_system_prompt(target_dir: Option<&str>) -> String {
+    match target_dir {
+        Some(path) if !path.is_empty() => format!(
+            "{SYSTEM_PROMPT}\n\n\
+             ■ 현재 정리 대상: {path}\n\
+             사용자가 경로를 명시하지 않으면 이 폴더를 대상으로 한다. 경로를 되묻지 마라.\n\
+             폴더 현황(어떤 파일이 어떻게 정리돼 있는지)을 물으면 list_files 도구로 \
+             이미 스캔된 DB 파일 목록을 읽는다. scan_directory(재스캔)는 사용자가 \
+             명시적으로 다시 스캔을 요청하거나 대상이 바뀐 경우에만 쓴다."
+        ),
+        _ => format!(
+            "{SYSTEM_PROMPT}\n\n\
+             ■ 현재 활성 대상 폴더가 없다. 사용자에게 정리할 폴더를 먼저 선택/알려달라고 요청한다. \
+             임의의 예시 경로(특히 Windows 형식 C:\\... 등)를 지어내지 마라."
+        ),
+    }
 }
 
 impl LlmClient for ClaudeClient {
@@ -183,7 +257,7 @@ impl LlmClient for ClaudeClient {
         let body = json!({
             "model":      AGENT_MODEL,
             "max_tokens": 1024,
-            "system":     SYSTEM_PROMPT,
+            "system":     build_system_prompt(self.target_dir.as_deref()),
             "tools":      tools,
             "messages":   messages,
         });
@@ -287,6 +361,7 @@ pub fn run_agent_loop(
                                         stage_count: val["stage_count"].as_u64().unwrap_or(0) as usize,
                                         risk_score:  val["risk_score"].as_f64().unwrap_or(0.0),
                                         preview:     val["preview"].as_str().unwrap_or("auto").to_string(),
+                                        ops:         val["ops"].as_array().cloned().unwrap_or_default(),
                                     });
                                 }
                             }
@@ -409,6 +484,11 @@ fn _dispatch_tool(
                 .ok_or_else(|| "scan_directory: 'path' 없음".to_string())?;
             tool_scan(path, conn)
         }
+        "list_files" => {
+            // path 생략 시 현재 정리 대상(root)을 사용. DB 읽기 전용(재스캔 없음).
+            let path = input["path"].as_str().filter(|s| !s.is_empty()).unwrap_or(root);
+            tool_list_files(path, conn)
+        }
         "read_content" => {
             let path = input["path"].as_str()
                 .ok_or_else(|| "read_content: 'path' 없음".to_string())?;
@@ -479,18 +559,76 @@ fn count_dirs(node: &crate::scanner::FileNode) -> usize {
     1 + node.children.iter().map(count_dirs).sum::<usize>()
 }
 
+/// list_files: 이미 스캔된 DB의 files 행을 대상 경로로 필터해 읽는다(읽기 전용).
+/// 파일시스템을 다시 걷지 않고(재스캔 없음), DB에 쓰지 않는다.
+/// 좌측 트리(스캔 결과)와 동일한 상태를 에이전트가 보게 하여 혼란을 방지한다.
+fn tool_list_files(path: &str, conn: &rusqlite::Connection) -> Result<Value, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT current_path, ext, size, topic_tags, summary, proposed_dest
+             FROM files WHERE current_path LIKE ?1 || '%'
+             ORDER BY current_path LIMIT 200",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let files: Vec<Value> = stmt
+        .query_map(rusqlite::params![path], |row| {
+            Ok(json!({
+                "path":          row.get::<_, String>(0)?,
+                "ext":           row.get::<_, Option<String>>(1)?,
+                "size_bytes":    row.get::<_, Option<i64>>(2)?,
+                "topic_tags":    row.get::<_, Option<String>>(3)?,
+                "summary":       row.get::<_, Option<String>>(4)?,
+                "proposed_dest": row.get::<_, Option<String>>(5)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(json!({
+        "path":        path,
+        "total_files": files.len(),
+        "files":       files,
+        "source":      "db", // 재스캔이 아니라 이미 스캔된 DB 행임을 명시.
+    }))
+}
+
 /// 사이드카 스크립트 경로를 현재 작업 디렉터리 기준으로 해석한다.
-fn resolve_sidecar() -> Result<std::path::PathBuf, String> {
-    let cwd = std::env::current_dir().map_err(|e| format!("cwd error: {e}"))?;
-    let p = cwd.join("sidecar/reader.py");
-    if p.exists() {
-        Ok(p)
-    } else {
-        Err(format!(
-            "사이드카를 찾을 수 없습니다: {} — sidecar/reader.py 경로를 확인하세요.",
-            p.display()
-        ))
+/// sidecar/reader.py 위치 해석.
+///
+/// tauri dev는 바이너리를 src-tauri/에서 실행하므로 cwd 기준 단일 경로로는
+/// 워크스페이스 루트의 sidecar/를 못 찾는다. 여러 후보를 순서대로 탐색한다:
+///   1. {cwd}/sidecar/reader.py            (워크스페이스 루트에서 직접 실행 시)
+///   2. {cwd}/../sidecar/reader.py         (cwd=src-tauri, tauri dev의 일반 케이스)
+///   3. {CARGO_MANIFEST_DIR}/../sidecar/reader.py  (컴파일 시각 앵커 — dev에서 가장 견고)
+///
+/// (배포 번들의 리소스 경로 해석은 P6 과제.)
+pub fn resolve_sidecar() -> Result<std::path::PathBuf, String> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("sidecar/reader.py"));
+        candidates.push(cwd.join("../sidecar/reader.py"));
     }
+    candidates.push(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../sidecar/reader.py"),
+    );
+
+    for c in &candidates {
+        if c.exists() {
+            return Ok(c.clone());
+        }
+    }
+
+    Err(format!(
+        "사이드카를 찾을 수 없습니다. 탐색한 경로: {} — sidecar/reader.py 위치를 확인하세요.",
+        candidates
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 /// read_content 도구: G1(동의) → G2/G3(범위·블랙리스트) → 사이드카 읽기.
@@ -664,6 +802,8 @@ fn tool_propose(
     };
 
     // ops 상세: 로깅과 AgentResult 조합에 사용.
+    // 프론트 PlanReview 의 PlanOp 타입과 필드명·형태를 맞춘다
+    // (op_id/seq/action/content_hash/from/to/conflict/reason).
     let ops_detail: Vec<Value> = plan.ops.iter().map(|o| {
         let action_str = match o.action {
             Action::Move   => "move",
@@ -671,10 +811,14 @@ fn tool_propose(
             Action::Rename => "rename",
         };
         json!({
-            "action": action_str,
-            "from":   o.from.to_string_lossy(),
-            "to":     o.to.to_string_lossy(),
-            "reason": o.reason,
+            "op_id":        o.op_id,
+            "seq":          o.seq,
+            "action":       action_str,
+            "content_hash": o.content_hash,
+            "from":         o.from.to_string_lossy(),
+            "to":           o.to.to_string_lossy(),
+            "conflict":     o.conflict.as_str(),
+            "reason":       o.reason,
         })
     }).collect();
 
@@ -898,6 +1042,228 @@ mod tests {
         );
     }
 
+    // ── 전달 체인 회귀 잠금: propose_plan ops → PlanProposed variant → 직렬화 ──
+    //
+    // 회귀 대상: variant 에 ops 필드가 없어 run_agent_loop 이 개수 필드만 통과시키고
+    // ops 배열을 버렸던 버그(끊긴 8곳 체인). I1 sentinel 과 동일한 "부재/누락 증명" 패턴 —
+    // 체인 어느 한 곳이라도 ops 전달을 끊으면 이 테스트가 반드시 실패한다.
+    struct PlanProposingClient;
+    impl LlmClient for PlanProposingClient {
+        fn complete(&self, _msgs: &[Value], _tools: &[Value]) -> Result<Value, String> {
+            Ok(json!({
+                "stop_reason": "tool_use",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "t-plan-1",
+                    "name": "propose_plan",
+                    "input": { "ops": [
+                        {"action": "move", "content_hash": "h1",
+                         "from": "/tmp/tdg_root/tax.pdf", "to": "/tmp/tdg_root/문서/재무/tax.pdf",
+                         "reason": "세금 문서"},
+                        {"action": "move", "content_hash": "h2",
+                         "from": "/tmp/tdg_root/main.py", "to": "/tmp/tdg_root/개발/main.py",
+                         "reason": "파이썬 코드"}
+                    ]}
+                }]
+            }))
+        }
+    }
+
+    #[test]
+    fn plan_proposed_variant_carries_ops_end_to_end() {
+        let conn = test_conn();
+        let tmp = std::env::temp_dir();
+        let result = run_agent_loop(
+            &PlanProposingClient,
+            &conn,
+            &tmp,
+            vec![json!({"role": "user", "content": "정리해줘"})],
+            false,
+            "/tmp/tdg_root",
+        )
+        .expect("run_agent_loop 성공");
+
+        // (1) variant 레벨: ops 가 비어있지 않게 실려야 한다.
+        match &result {
+            AgentResult::PlanProposed { ops, op_count, .. } => {
+                assert_eq!(*op_count, 2, "op_count 요약 필드 유지");
+                assert_eq!(
+                    ops.len(),
+                    2,
+                    "전달 체인 회귀: variant 가 ops 를 잃으면 안 됨 (개수만 통과 = 버그)"
+                );
+                // 각 op 의 핵심 필드가 살아있어야 한다.
+                assert_eq!(ops[0]["action"].as_str().unwrap(), "move");
+                assert_eq!(ops[0]["from"].as_str().unwrap(), "/tmp/tdg_root/tax.pdf");
+                assert!(ops[0]["to"].as_str().unwrap().contains("문서/재무"));
+                // conflict 필드가 payload 에 실제로 실려야 한다(FE 렌더가 읽는 필드).
+                assert_eq!(
+                    ops[0]["conflict"].as_str().unwrap(),
+                    "none",
+                    "conflict 필드는 payload 에 존재해야 함(현재 agent 경로에선 항상 none)"
+                );
+            }
+            other => panic!("PlanProposed 여야 함, got: {other:?}"),
+        }
+
+        // (2) 직렬화 경계(= ChatResponse.ops): serde JSON 에도 ops 가 손실 없이 실려야 한다.
+        let serialized = serde_json::to_value(&result).expect("직렬화 성공");
+        assert_eq!(serialized["kind"], "plan_proposed");
+        let ops_json = serialized["ops"]
+            .as_array()
+            .expect("직렬화된 JSON 에 ops 배열이 존재해야 함(ChatResponse 경계)");
+        assert_eq!(
+            ops_json.len(),
+            2,
+            "ChatResponse 직렬화 경계에서 ops 손실 금지"
+        );
+        assert_eq!(ops_json[1]["conflict"].as_str().unwrap(), "none");
+    }
+
+    // ── 삭제→stage 매핑: move+stage 혼합 플랜이 정상 관통하고 카운트가 맞는가 ──
+    // 제거 의도는 stage action 으로 표현되므로(새 action 없음), 혼합 플랜이
+    // variant 까지 손실 없이 흐르고 move_count/stage_count 가 분리 집계돼야 한다.
+    struct MoveAndStageClient;
+    impl LlmClient for MoveAndStageClient {
+        fn complete(&self, _msgs: &[Value], _tools: &[Value]) -> Result<Value, String> {
+            Ok(json!({
+                "stop_reason": "tool_use",
+                "content": [{
+                    "type": "tool_use", "id": "t-mix-1", "name": "propose_plan",
+                    "input": { "ops": [
+                        {"action": "move",  "content_hash": "h1",
+                         "from": "/tmp/tdg_root/main.py", "to": "/tmp/tdg_root/개발/main.py",
+                         "reason": "파이썬 코드"},
+                        {"action": "stage", "content_hash": "h2",
+                         "from": "/tmp/tdg_root/dup.pdf", "to": "/tmp/tdg_root/dup.pdf",
+                         "reason": "중복본 — 격리(소프트 삭제)"}
+                    ]}
+                }]
+            }))
+        }
+    }
+
+    #[test]
+    fn delete_intent_maps_to_stage_op_and_counts() {
+        let conn = test_conn();
+        let tmp = std::env::temp_dir();
+        let result = run_agent_loop(
+            &MoveAndStageClient, &conn, &tmp,
+            vec![json!({"role": "user", "content": "중복본 제거하고 코드 정리해줘"})],
+            false, "/tmp/tdg_root",
+        ).expect("run_agent_loop 성공");
+
+        match &result {
+            AgentResult::PlanProposed { ops, op_count, move_count, stage_count, .. } => {
+                assert_eq!(*op_count, 2);
+                assert_eq!(*move_count, 1, "move 1건");
+                assert_eq!(*stage_count, 1, "제거→stage 1건으로 분리 집계");
+                // stage op 가 실제로 stage action 으로 실려야 한다(delete 아님).
+                let has_stage = ops.iter().any(|o| o["action"].as_str() == Some("stage"));
+                assert!(has_stage, "제거 의도가 stage op 로 관통해야 함");
+                // delete/trash action 은 존재하지 않는다.
+                assert!(
+                    ops.iter().all(|o| matches!(o["action"].as_str(), Some("move") | Some("stage") | Some("rename"))),
+                    "action 은 move/stage/rename 만 — delete/trash 없음"
+                );
+            }
+            other => panic!("PlanProposed 여야 함, got: {other:?}"),
+        }
+    }
+
+    // ── 시스템 프롬프트: 삭제→stage 매핑·역할 분리 안내가 포함되는가 ────────────
+    #[test]
+    fn system_prompt_documents_delete_maps_to_stage() {
+        let sys = build_system_prompt(Some("/tmp/x"));
+        assert!(sys.contains("stage"), "stage 매핑 언급");
+        assert!(
+            sys.contains("삭제") && sys.contains("격리"),
+            "삭제/제거 의도를 격리(stage)로 표현하라는 안내 포함"
+        );
+        assert!(
+            sys.contains("delete") || sys.contains("영구 삭제하지 않"),
+            "delete 동작 부재/영구삭제 안 함 명시"
+        );
+        assert!(
+            sys.contains("list_files") && sys.contains("scan_directory"),
+            "현황(list_files) vs 플랜(scan_directory) 역할 분리 안내 포함"
+        );
+    }
+
+    // ── 대상 경로 관통: 시스템 프롬프트에 활성 대상이 주입되는가 ────────────────
+
+    #[test]
+    fn system_prompt_injects_target_dir_when_present() {
+        let sys = build_system_prompt(Some("/Users/me/Downloads/files"));
+        assert!(
+            sys.contains("현재 정리 대상: /Users/me/Downloads/files"),
+            "활성 대상 경로가 시스템 컨텍스트에 주입돼야 함"
+        );
+        assert!(
+            sys.contains("경로를 되묻지 마라"),
+            "대상이 있으면 되묻지 말라는 지시가 있어야 함"
+        );
+        assert!(sys.contains("list_files"), "현황 조회 시 DB 우선(list_files) 안내 포함");
+    }
+
+    #[test]
+    fn system_prompt_asks_for_folder_when_no_target() {
+        // 대상 없음(첫 실행/미선택) → 되묻기 정당 + 윈도우 하드코딩 예시 금지 지시.
+        let sys = build_system_prompt(None);
+        assert!(
+            sys.contains("활성 대상 폴더가 없다"),
+            "대상 없을 때만 폴더 요청 분기"
+        );
+        assert!(
+            sys.contains("Windows") || sys.contains("C:\\"),
+            "윈도우 예시를 '지어내지 말라'는 지시가 명시돼야 함"
+        );
+        // 대상 주입 문구는 없어야 한다.
+        assert!(
+            !sys.contains("현재 정리 대상:"),
+            "대상이 없으면 '현재 정리 대상' 주입 문구가 없어야 함"
+        );
+        // 빈 문자열도 None 과 동일 취급.
+        assert_eq!(build_system_prompt(Some("")), build_system_prompt(None));
+    }
+
+    // ── DoD 3: list_files 는 DB 행만 읽는다(재스캔 아님) ──────────────────────
+
+    #[test]
+    fn list_files_reads_db_rows_scoped_to_target_no_rescan() {
+        let conn = test_conn();
+        let root = "/Users/me/Downloads/files";
+        // 대상 하위 2건 + 범위 밖 1건 삽입.
+        conn.execute(
+            "INSERT INTO files (content_hash, current_path, size, mtime, ext, topic_tags, proposed_dest)
+             VALUES ('h1', ?1, 100, 0, 'py', '[\"개발\"]', '개발/main.py')",
+            rusqlite::params![format!("{root}/main.py")],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO files (content_hash, current_path, size, mtime, ext, topic_tags, proposed_dest)
+             VALUES ('h2', ?1, 200, 0, 'pdf', '[\"문서\"]', '문서/tax.pdf')",
+            rusqlite::params![format!("{root}/tax.pdf")],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO files (content_hash, current_path, size, mtime, ext)
+             VALUES ('h3', '/Users/me/Other/x.txt', 50, 0, 'txt')",
+            [],
+        ).unwrap();
+
+        let result = tool_list_files(root, &conn).unwrap();
+
+        // 재스캔이 아니라 DB 소스임을 명시.
+        assert_eq!(result["source"].as_str().unwrap(), "db");
+        // 범위 내 2건만, 범위 밖 제외.
+        assert_eq!(result["total_files"].as_u64().unwrap(), 2, "대상 하위 파일만 조회");
+        let files = result["files"].as_array().unwrap();
+        let paths: Vec<&str> = files.iter().filter_map(|f| f["path"].as_str()).collect();
+        assert!(paths.iter().all(|p| p.starts_with(root)), "범위 밖 파일이 새면 안 됨: {paths:?}");
+        // 메타데이터(태그·제안 목적지)가 함께 실려 좌측 트리와 동일 상태를 보게 한다.
+        assert!(files.iter().any(|f| f["topic_tags"].as_str() == Some("[\"개발\"]")));
+        assert!(files.iter().any(|f| f["proposed_dest"].as_str() == Some("문서/tax.pdf")));
+    }
+
     // ── G1: 미동의 시 read_content/summarize 차단 ─────────────────────────────
 
     fn grant_consent(conn: &rusqlite::Connection) {
@@ -996,6 +1362,28 @@ mod tests {
         );
     }
 
+    // ── resolve_sidecar: cwd 무관하게 reader.py 를 찾아야 함 ──────────────────
+    // 회귀: tauri dev 는 cwd=src-tauri 로 실행 → 단일 cwd/sidecar 경로로는 부재.
+    // CARGO_MANIFEST_DIR 앵커 후보가 있으므로 어떤 cwd 에서도 해석되어야 한다.
+    #[test]
+    fn resolve_sidecar_finds_reader_from_src_tauri_cwd() {
+        // cwd 를 src-tauri(=CARGO_MANIFEST_DIR)로 설정 — tauri dev 와 동일 조건.
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        std::env::set_current_dir(&manifest).expect("set CWD to src-tauri");
+
+        let resolved = resolve_sidecar().expect("사이드카가 해석되어야 함(cwd=src-tauri)");
+        assert!(
+            resolved.exists(),
+            "해석된 경로가 실재해야 함: {}",
+            resolved.display()
+        );
+        assert!(
+            resolved.ends_with("sidecar/reader.py"),
+            "reader.py 로 끝나야 함: {}",
+            resolved.display()
+        );
+    }
+
     // ── DoD 1 e2e: 실제 Claude API + 실제 사이드카 + 실제 키체인 ─────────────
     // 실행: cargo test --manifest-path src-tauri/Cargo.toml -- --ignored e2e_dod1 --nocapture
     #[test]
@@ -1083,19 +1471,12 @@ mod tests {
             [],
         ).unwrap();
 
-        // ── API 키: 테스트 바이너리는 macOS keychain ACL 미통과 → env 우선 ──
-        let api_key = std::env::var("TIDYDOG_TEST_APIKEY")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                keyring::Entry::new("tidydog", "anthropic_api_key")
-                    .ok()
-                    .and_then(|e| e.get_password().ok())
-            })
-            .expect("API key not found — set TIDYDOG_TEST_APIKEY or store in keychain");
+        // ── API 키: ANTHROPIC_API_KEY env → TIDYDOG_API_KEY env → 키체인 순 ──
+        let api_key = crate::keyutil::get_api_key()
+            .expect("API key not found — set ANTHROPIC_API_KEY env or store in keychain");
 
-        let client = ClaudeClient { api_key };
         let root = tmp.to_string_lossy().to_string();
+        let client = ClaudeClient { api_key, target_dir: Some(root.clone()) };
 
         eprintln!("\n══ DoD1 e2e start ══ root={root}");
 
@@ -1110,7 +1491,7 @@ mod tests {
 
         eprintln!("\n══ DoD1 e2e result ══");
         match &result {
-            Ok(AgentResult::PlanProposed { plan_id, op_count, move_count, stage_count, risk_score, preview }) => {
+            Ok(AgentResult::PlanProposed { plan_id, op_count, move_count, stage_count, risk_score, preview, ops: _ }) => {
                 eprintln!("✅ PlanProposed plan_id={plan_id} ops={op_count} (move={move_count}/stage={stage_count}) risk={risk_score:.2} preview={preview}");
             }
             Ok(AgentResult::Text { message }) => eprintln!("Text: {message}"),
