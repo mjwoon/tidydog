@@ -14,6 +14,24 @@ pub struct FileNode {
     pub children: Vec<FileNode>,
 }
 
+/// scan_recursive + mark-sweep prune: 스캔 후, 이번 스캔에서 못 본(= 물리적으로
+/// 사라진) root 하위 인덱스 행을 제거한다. stale 인덱스가 남기는 유령 중복본
+/// (content_hash 중복 오판)을 막는다. FE 트리·에이전트 scan_directory 도구가 공유한다.
+pub fn scan_and_prune(root: &Path, max_depth: usize, conn: &Connection) -> Option<FileNode> {
+    // 스캔 시작 시각 — scan_recursive 는 본 파일마다 last_seen=now(>=시작)로 갱신한다.
+    let scan_start = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let node = scan_recursive(root, 0, max_depth, conn)?;
+    let root_str = root.to_string_lossy();
+    let _ = conn.execute(
+        "DELETE FROM files WHERE current_path LIKE ?1 || '%' AND last_seen < ?2",
+        rusqlite::params![root_str.as_ref(), scan_start],
+    );
+    Some(node)
+}
+
 /// Returns None to signal "skip this entry" (symlink, hidden, permission error).
 /// Errors reading individual children are swallowed so one bad entry doesn't abort the scan.
 pub fn scan_recursive(

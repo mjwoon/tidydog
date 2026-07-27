@@ -31,8 +31,18 @@ fn scan_directory(
     fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
     let conn = db::init_db(&app_data_dir)?;
     let depth = max_depth.unwrap_or(10);
-    let path = std::path::Path::new(&root);
-    scanner::scan_recursive(path, 0, depth, &conn)
+    scan_and_index(&conn, &root, depth)
+}
+
+/// 실제 FS 를 스캔해 files 인덱스를 갱신하고, 이번 스캔에서 못 본(= 물리적으로
+/// 사라진) root 하위 항목을 제거한다(mark-sweep). stale 인덱스가 남기는
+/// 유령 중복본(content_hash 중복 오판)을 방지한다.
+fn scan_and_index(
+    conn: &rusqlite::Connection,
+    root: &str,
+    depth: usize,
+) -> Result<scanner::FileNode, String> {
+    scanner::scan_and_prune(std::path::Path::new(root), depth, conn)
         .ok_or_else(|| format!("Cannot scan root path: {}", root))
 }
 
@@ -658,4 +668,63 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod scan_prune_tests {
+    use super::*;
+    use std::fs;
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("tidydog_{}_{}", name, std::process::id()));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    /// scan_and_index 는 이번 스캔에서 사라진 root 하위 인덱스(유령)를 제거하고
+    /// 실제 존재하는 파일 인덱스는 유지한다 → 유령 중복본(content_hash) 오판 방지.
+    #[test]
+    fn scan_prunes_stale_index_entries() {
+        let ws = tmp("scanprune_ws");
+        fs::write(ws.join("a.md"), b"aaa").unwrap();
+        fs::write(ws.join("b.md"), b"bbb").unwrap();
+
+        // DB 는 스캔 대상 밖(별도 temp)에 둔다 — 스캔이 db 파일을 인덱싱하지 않도록.
+        let db_dir = tmp("scanprune_db");
+        let conn = db::init_db(&db_dir).unwrap();
+        let root = ws.to_string_lossy().to_string();
+
+        // 과거 조직/undo 잔재 흉내: 물리적으로 없는 카테고리 경로 + 오래된 last_seen.
+        let phantom = format!("{root}/기술명세/a.md");
+        conn.execute(
+            "INSERT INTO files (content_hash, current_path, size, mtime, last_seen, indexed_at)
+             VALUES ('phantom', ?1, 3, 0, 1, 1)",
+            rusqlite::params![phantom],
+        )
+        .unwrap();
+
+        scan_and_index(&conn, &root, 10).unwrap();
+
+        let phantom_left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE current_path = ?1",
+                rusqlite::params![phantom],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(phantom_left, 0, "사라진(유령) 인덱스 항목은 제거돼야 함");
+
+        let real: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE current_path LIKE ?1 || '%'",
+                rusqlite::params![root],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(real, 2, "실제 존재하는 2개 파일 인덱스는 유지");
+
+        let _ = fs::remove_dir_all(&ws);
+        let _ = fs::remove_dir_all(&db_dir);
+    }
 }

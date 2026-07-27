@@ -535,7 +535,8 @@ fn _dispatch_tool(
 fn tool_scan(path: &str, conn: &rusqlite::Connection) -> Result<Value, String> {
     use crate::scanner;
     let root_path = Path::new(path);
-    let node = scanner::scan_recursive(root_path, 0, 10, conn)
+    // scan_and_prune: 재스캔 + stale 인덱스 제거 → 에이전트가 유령 중복본을 보지 않게.
+    let node = scanner::scan_and_prune(root_path, 10, conn)
         .ok_or_else(|| format!("스캔 실패 (경로 없음 또는 권한 오류): {path}"))?;
 
     // DB에서 content_hash 포함 파일 목록 조회 (최대 50건).
