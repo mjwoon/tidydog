@@ -256,7 +256,7 @@ impl LlmClient for ClaudeClient {
         let client = reqwest::blocking::Client::new();
         let body = json!({
             "model":      AGENT_MODEL,
-            "max_tokens": 1024,
+            "max_tokens": 4096,
             "system":     build_system_prompt(self.target_dir.as_deref()),
             "tools":      tools,
             "messages":   messages,
@@ -325,11 +325,25 @@ pub fn run_agent_loop(
                     message: extract_text(&content_arr),
                 });
             }
-            "tool_use" => {
+            "tool_use" | "max_tokens" => {
                 let tool_blocks: Vec<&Value> = content_arr
                     .iter()
                     .filter(|b| b["type"] == "tool_use")
                     .collect();
+
+                // max_tokens 절단: tool_use 없이 프로즈만 왔으면 완료로 오인하지 말고
+                // 간결 재시도를 유도해 루프를 계속한다(MAX_STEPS 로 무한루프 방지).
+                if tool_blocks.is_empty() {
+                    if stop_reason == "max_tokens" {
+                        msgs.push(json!({
+                            "role": "user",
+                            "content": "이전 응답이 max_tokens 로 잘렸습니다. 설명은 최소화하고 곧바로 propose_plan(정리) 또는 propose_rule_change(규칙) 도구를 호출해 마무리하세요."
+                        }));
+                        continue;
+                    }
+                    // tool_use 인데 블록이 없는 비정상 → 방어적으로 텍스트 반환.
+                    return Ok(AgentResult::Text { message: extract_text(&content_arr) });
+                }
 
                 let mut results: Vec<Value> = Vec::new();
 
