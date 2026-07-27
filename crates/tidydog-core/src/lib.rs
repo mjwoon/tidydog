@@ -145,6 +145,12 @@ pub mod testing {
                 return Err(io::Error::new(io::ErrorKind::NotFound, "source missing"));
             }
             self.present.insert(to.to_path_buf());
+            // create_dir_all 시뮬레이션: 목적지 상위 폴더들을 present 에 등록한다.
+            let mut cur = to.parent();
+            while let Some(dir) = cur {
+                self.present.insert(dir.to_path_buf());
+                cur = dir.parent();
+            }
             Ok(())
         }
         fn stage_file(&mut self, from: &Path, content_hash: &str) -> io::Result<PathBuf> {
@@ -170,6 +176,18 @@ pub mod testing {
         }
         fn exists(&self, p: &Path) -> bool {
             self.present.contains(p)
+        }
+        fn remove_empty_dir(&mut self, dir: &Path) -> io::Result<()> {
+            // 비어 있음 = present 에 dir 하위 경로가 없음(dir 자신 제외).
+            let non_empty = self
+                .present
+                .iter()
+                .any(|pp| pp != dir && pp.starts_with(dir));
+            if non_empty {
+                return Err(io::Error::new(io::ErrorKind::Other, "directory not empty"));
+            }
+            self.present.remove(dir);
+            Ok(())
         }
     }
 }

@@ -44,6 +44,14 @@ impl<'a> SqliteStore<'a> {
     }
 }
 
+fn parse_created_dirs(s: &str) -> Vec<PathBuf> {
+    serde_json::from_str::<Vec<String>>(s)
+        .unwrap_or_default()
+        .into_iter()
+        .map(PathBuf::from)
+        .collect()
+}
+
 fn action_from_str(s: &str) -> Action {
     match s {
         "stage" => Action::Stage,
@@ -163,11 +171,19 @@ impl<'a> Store for SqliteStore<'a> {
     }
 
     fn append_journal(&mut self, entry: JournalEntry) -> u64 {
+        let created_dirs_json = serde_json::to_string(
+            &entry
+                .created_dirs
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_string());
         let _ = self.conn.execute(
             "INSERT INTO journal
              (plan_id, op_id, action, content_hash, from_path, to_path,
-              executed_at, completed_at, undoable, undone_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+              executed_at, completed_at, undoable, undone_at, created_dirs)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![
                 entry.plan_id,
                 entry.op_id,
@@ -179,6 +195,7 @@ impl<'a> Store for SqliteStore<'a> {
                 entry.completed_at.map(|t| t as i64),
                 entry.undoable as i64,
                 entry.undone_at.map(|t| t as i64),
+                created_dirs_json,
             ],
         );
         self.conn.last_insert_rowid() as u64
@@ -187,7 +204,7 @@ impl<'a> Store for SqliteStore<'a> {
     fn journal_for_plan(&self, plan_id: &str) -> Vec<JournalEntry> {
         let mut stmt = match self.conn.prepare(
             "SELECT entry_id, plan_id, op_id, action, content_hash, from_path, to_path,
-                    executed_at, completed_at, undoable, undone_at
+                    executed_at, completed_at, undoable, undone_at, created_dirs
              FROM journal WHERE plan_id = ?1 ORDER BY entry_id",
         ) {
             Ok(s) => s,
@@ -206,6 +223,7 @@ impl<'a> Store for SqliteStore<'a> {
                 completed_at: row.get::<_, Option<i64>>(8)?.map(|t| t as u64),
                 undoable: row.get::<_, i64>(9)? != 0,
                 undone_at: row.get::<_, Option<i64>>(10)?.map(|t| t as u64),
+                created_dirs: parse_created_dirs(&row.get::<_, String>(11)?),
             })
         })
         .ok()
@@ -251,7 +269,7 @@ impl<'a> Store for SqliteStore<'a> {
     fn inflight_entries(&self) -> Vec<JournalEntry> {
         let mut stmt = match self.conn.prepare(
             "SELECT entry_id, plan_id, op_id, action, content_hash, from_path, to_path,
-                    executed_at, completed_at, undoable, undone_at
+                    executed_at, completed_at, undoable, undone_at, created_dirs
              FROM journal WHERE completed_at IS NULL ORDER BY entry_id",
         ) {
             Ok(s) => s,
@@ -270,6 +288,7 @@ impl<'a> Store for SqliteStore<'a> {
                 completed_at: row.get::<_, Option<i64>>(8)?.map(|t| t as u64),
                 undoable: row.get::<_, i64>(9)? != 0,
                 undone_at: row.get::<_, Option<i64>>(10)?.map(|t| t as u64),
+                created_dirs: parse_created_dirs(&row.get::<_, String>(11)?),
             })
         })
         .ok()

@@ -41,7 +41,8 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
              executed_at  INTEGER NOT NULL,
              completed_at INTEGER,
              undoable     INTEGER NOT NULL DEFAULT 1,
-             undone_at    INTEGER
+             undone_at    INTEGER,
+             created_dirs TEXT    NOT NULL DEFAULT '[]'
          );
          CREATE INDEX IF NOT EXISTS idx_journal_plan ON journal(plan_id);
          CREATE INDEX IF NOT EXISTS idx_journal_inflight ON journal(completed_at) WHERE completed_at IS NULL;
@@ -79,6 +80,9 @@ pub fn init_schema(conn: &Connection) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     // 기존 DB 마이그레이션: completed_at 컬럼이 없으면 추가.
     let _ = conn.execute_batch("ALTER TABLE journal ADD COLUMN completed_at INTEGER;");
+    // 마이그레이션: created_dirs(undo 시 제거할 생성 폴더 목록, JSON) 컬럼.
+    let _ = conn
+        .execute_batch("ALTER TABLE journal ADD COLUMN created_dirs TEXT NOT NULL DEFAULT '[]';");
     // Phase 5-b: rule_changes 테이블 (기존 DB 마이그레이션 포함).
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS rule_changes (

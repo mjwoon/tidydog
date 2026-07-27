@@ -96,6 +96,12 @@ impl FileOps for FsFileOps {
     fn exists(&self, p: &Path) -> bool {
         p.exists()
     }
+
+    fn remove_empty_dir(&mut self, dir: &Path) -> io::Result<()> {
+        // std::fs::remove_dir 는 빈 디렉터리만 제거하고, 비어 있지 않으면 Err 를 낸다
+        // → 재귀 삭제 없음(사용자 데이터 보호). undo 는 이 Err 를 무시(보존)한다.
+        std::fs::remove_dir(dir)
+    }
 }
 
 impl FsFileOps {

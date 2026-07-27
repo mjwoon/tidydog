@@ -15,6 +15,9 @@ pub trait FileOps {
     fn restore_file(&mut self, content_hash: &str, to: &Path) -> io::Result<()>;
     /// 경로 존재 여부(충돌 해소용).
     fn exists(&self, p: &Path) -> bool;
+    /// 비어 있는 디렉터리 제거(undo 시 execute 가 만든 폴더 정리용).
+    /// 비어 있지 않으면 Err — 절대 재귀 삭제하지 않는다(사용자 데이터 보호).
+    fn remove_empty_dir(&mut self, dir: &Path) -> io::Result<()>;
 }
 
 /// 영속성. 어댑터가 SQLite로 구현.

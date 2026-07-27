@@ -138,6 +138,9 @@ pub struct JournalEntry {
     pub completed_at: Option<u64>,
     pub undoable: bool,
     pub undone_at: Option<u64>,
+    /// execute 의 move 가 새로 만든 목적지 디렉터리들(깊은 것부터 얕은 순).
+    /// undo 시 비어 있으면 제거해 execute 이전 상태로 되돌린다. 기존 폴더는 포함하지 않는다.
+    pub created_dirs: Vec<PathBuf>,
 }
 
 /// 스코프 가드 거부 사유.

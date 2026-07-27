@@ -230,6 +230,7 @@ fn recover_inflight_to_exists_marks_completed() {
         completed_at: None, // in-flight
         undoable: true,
         undone_at: None,
+        created_dirs: vec![],
     });
     assert_eq!(store.inflight_entries().len(), 1);
 
@@ -257,6 +258,7 @@ fn recover_inflight_from_exists_means_op_not_started() {
         completed_at: None,
         undoable: true,
         undone_at: None,
+        created_dirs: vec![],
     });
 
     // from이 존재하면 op가 실행되지 않은 것 → inflight entry 존재
@@ -287,4 +289,31 @@ fn undo_out_of_window_denied() {
         e.execute(&plan.plan_id, true).unwrap();
     }
     assert_eq!(e.undo(&first_id), Err(GateError::OutOfUndoWindow));
+}
+
+/// undo 완전성: execute 가 만든 빈 폴더는 undo 가 제거하고, 사용자가 미리 만든 폴더는 보존한다.
+#[test]
+fn undo_removes_created_dirs_keeps_preexisting() {
+    let guard = ScopeGuard::new(vec![p("/scope")], vec![]);
+    let mut fileops = FakeFileOps::with_files([p("/scope/a.md")]);
+    // 스코프 루트 + 사용자가 미리 만든 빈 폴더가 이미 존재함을 모델링.
+    fileops.present.insert(p("/scope"));
+    fileops.present.insert(p("/scope/기존폴더"));
+    let mut e = Engine::new(guard, FakeStore::default(), fileops);
+
+    let plan = e.propose(vec![mv("/scope/a.md", "/scope/개발/a.md")], None, None);
+    e.confirm(&plan.plan_id).unwrap();
+    e.execute(&plan.plan_id, true).unwrap();
+
+    // execute 후: 새 폴더 생성 + 파일 이동.
+    assert!(e.fileops.exists(&p("/scope/개발")), "execute 가 폴더를 만들어야 함");
+    assert!(e.fileops.exists(&p("/scope/개발/a.md")));
+
+    e.undo(&plan.plan_id).unwrap();
+
+    // undo 후: 파일 복원 + 생성 폴더 제거 + 기존 폴더·루트 보존.
+    assert!(e.fileops.exists(&p("/scope/a.md")), "파일이 원위치로 복원");
+    assert!(!e.fileops.exists(&p("/scope/개발")), "execute 가 만든 빈 폴더는 제거");
+    assert!(e.fileops.exists(&p("/scope/기존폴더")), "사용자 기존 폴더는 보존");
+    assert!(e.fileops.exists(&p("/scope")), "스코프 루트 보존");
 }

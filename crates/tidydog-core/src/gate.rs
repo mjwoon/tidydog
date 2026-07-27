@@ -158,6 +158,8 @@ impl<G: Guard, S: Store, F: FileOps> Engine<G, S, F> {
             match op.action {
                 Action::Move | Action::Rename => {
                     let (final_to, renamed) = self.resolve_conflict(&op.to);
+                    // move 가 새로 만들 목적지 폴더 = undo 시 되돌릴 대상(파일 작업 전 계산).
+                    let created_dirs = self.dirs_to_create(&final_to);
                     // 1) 의도 기록(completed_at=None) — autocommit으로 즉시 내구화
                     let entry_id = self.store.append_journal(JournalEntry {
                         entry_id: 0,
@@ -171,6 +173,7 @@ impl<G: Guard, S: Store, F: FileOps> Engine<G, S, F> {
                         completed_at: None,
                         undoable: true,
                         undone_at: None,
+                        created_dirs,
                     });
                     // 2) 파일 작업
                     if let Err(e) = self.fileops.move_file(&op.from, &final_to) {
@@ -206,6 +209,8 @@ impl<G: Guard, S: Store, F: FileOps> Engine<G, S, F> {
                         completed_at: None,
                         undoable: true,
                         undone_at: None,
+                        // stage 는 사용자 트리에 폴더를 만들지 않는다(staging_dir 로 이동).
+                        created_dirs: Vec::new(),
                     });
                     // 2) 파일 작업
                     let staged = match self.fileops.stage_file(&op.from, &op.content_hash) {
@@ -262,6 +267,11 @@ impl<G: Guard, S: Store, F: FileOps> Engine<G, S, F> {
                             op_id: entry.op_id.clone(),
                             message: e.to_string(),
                         })?;
+                    // execute 가 만든 빈 디렉터리 제거(깊은 것부터). 비어 있지 않으면
+                    // remove_empty_dir 이 Err → 무시(다른 파일이 남았으면 보존, 안전).
+                    for dir in &entry.created_dirs {
+                        let _ = self.fileops.remove_empty_dir(dir);
+                    }
                 }
                 Action::Stage => {
                     self.fileops
@@ -276,6 +286,21 @@ impl<G: Guard, S: Store, F: FileOps> Engine<G, S, F> {
         }
         self.store.set_plan_status(plan_id, PlanStatus::Undone);
         Ok(())
+    }
+
+    /// move 목적지의 상위 디렉터리 중 아직 없는 것들을 깊은 것부터 반환.
+    /// create_dir_all 이 새로 만들 폴더 = undo 시 되돌릴 대상. 이미 있는 폴더는 제외한다.
+    fn dirs_to_create(&self, to: &Path) -> Vec<PathBuf> {
+        let mut created = Vec::new();
+        let mut cur = to.parent();
+        while let Some(dir) = cur {
+            if self.fileops.exists(dir) {
+                break;
+            }
+            created.push(dir.to_path_buf());
+            cur = dir.parent();
+        }
+        created
     }
 
     /// 목적지 충돌 해소: 이미 존재하면 "name (n).ext"로. 덮어쓰기 없음.
