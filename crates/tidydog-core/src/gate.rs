@@ -84,6 +84,15 @@ impl<G: Guard, S: Store, F: FileOps> Engine<G, S, F> {
         for (i, op) in ops.iter_mut().enumerate() {
             op.seq = i as u32;
             op.op_id = format!("{plan_id}-{i}");
+            // P-1: 제안 시점 목적지 충돌 미리보기(PlanReview "이름충돌" 배지용).
+            // Move/Rename 만 — Stage 의 to 는 from placeholder라 검사하면 오탐한다.
+            // execute 의 resolve_conflict 와 동일 기준(fileops.exists)이며, 실제 리네임은
+            // 여전히 execute 가 수행한다. (같은 플랜 내 op 간 충돌은 execute 가 순차 처리.)
+            if matches!(op.action, Action::Move | Action::Rename)
+                && self.fileops.exists(&op.to)
+            {
+                op.conflict = Conflict::Rename;
+            }
         }
         let plan = Plan {
             plan_id: plan_id.clone(),

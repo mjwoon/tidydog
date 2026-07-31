@@ -1115,7 +1115,8 @@ mod tests {
                 assert_eq!(
                     ops[0]["conflict"].as_str().unwrap(),
                     "none",
-                    "conflict 필드는 payload 에 존재해야 함(현재 agent 경로에선 항상 none)"
+                    "conflict 필드는 payload 에 존재해야 함(이 시나리오는 목적지가 비어 none; \
+                     P-1 이후 목적지 존재 시 rename 으로 채워진다)"
                 );
             }
             other => panic!("PlanProposed 여야 함, got: {other:?}"),

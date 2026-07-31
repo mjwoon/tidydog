@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use tidydog_core::testing::{FakeFileOps, FakeStore};
-use tidydog_core::{Action, Engine, FileOps, GateError, PlanOp, PlanStatus, ScopeGuard, Store};
+use tidydog_core::{Action, Conflict, Engine, FileOps, GateError, PlanOp, PlanStatus, ScopeGuard, Store};
 
 fn engine_with_fail(files: &[&str], fail_at: usize) -> Engine<ScopeGuard, FakeStore, FakeFileOps> {
     let guard = ScopeGuard::new(vec![p("/scope")], vec![]);
@@ -289,6 +289,33 @@ fn undo_out_of_window_denied() {
         e.execute(&plan.plan_id, true).unwrap();
     }
     assert_eq!(e.undo(&first_id), Err(GateError::OutOfUndoWindow));
+}
+
+// ── P-1: 제안 시점 충돌 미리보기 ──────────────────────────────────────────────
+
+/// 목적지에 동명 파일이 이미 있으면 propose 가 conflict=Rename 을 채운다(PlanReview 배지용).
+#[test]
+fn propose_flags_conflict_when_dest_exists() {
+    let mut e = engine(&["/scope/a.txt", "/scope/docs/a.txt"]);
+    let plan = e.propose(vec![mv("/scope/a.txt", "/scope/docs/a.txt")], None, None);
+    assert_eq!(plan.ops[0].conflict, Conflict::Rename);
+}
+
+/// 목적지가 비어 있으면 conflict=None.
+#[test]
+fn propose_no_conflict_when_dest_free() {
+    let mut e = engine(&["/scope/a.txt"]);
+    let plan = e.propose(vec![mv("/scope/a.txt", "/scope/docs/a.txt")], None, None);
+    assert_eq!(plan.ops[0].conflict, Conflict::None);
+}
+
+/// stage 의 to 는 from placeholder — from 이 존재해도 conflict 로 오탐하지 않는다.
+#[test]
+fn propose_stage_never_flags_conflict() {
+    let mut e = engine(&["/scope/old.dmg"]);
+    let op = PlanOp::new(Action::Stage, "h", p("/scope/old.dmg"), p("/scope/old.dmg"));
+    let plan = e.propose(vec![op], None, None);
+    assert_eq!(plan.ops[0].conflict, Conflict::None);
 }
 
 /// undo 완전성: execute 가 만든 빈 폴더는 undo 가 제거하고, 사용자가 미리 만든 폴더는 보존한다.
