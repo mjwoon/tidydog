@@ -253,7 +253,6 @@ fn build_system_prompt(target_dir: Option<&str>) -> String {
 
 impl LlmClient for ClaudeClient {
     fn complete(&self, messages: &[Value], tools: &[Value]) -> Result<Value, String> {
-        let client = reqwest::blocking::Client::new();
         let body = json!({
             "model":      AGENT_MODEL,
             "max_tokens": 4096,
@@ -261,24 +260,9 @@ impl LlmClient for ClaudeClient {
             "tools":      tools,
             "messages":   messages,
         });
-        let resp = client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .map_err(|e| format!("API 요청 실패: {e}"))?;
-
-        if resp.status().as_u16() == 429 {
-            return Err("API 요청 한도 초과 (429). 잠시 후 다시 시도하세요.".to_string());
-        }
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().unwrap_or_default();
-            return Err(format!("API 오류 {status}: {text}"));
-        }
-        resp.json::<Value>().map_err(|e| format!("응답 파싱 실패: {e}"))
+        // 재시도(지수 백오프) + 사용자향 메시지 변환은 llm_http 가 담당(529/429/5xx/네트워크).
+        crate::llm_http::anthropic_post_with_retry(&self.api_key, &body)
+            .map_err(|e| e.user_message())
     }
 }
 

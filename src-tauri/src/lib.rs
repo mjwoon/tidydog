@@ -3,6 +3,7 @@ mod db;
 pub mod fileops;
 mod guard;
 pub mod keyutil;
+mod llm_http;
 pub mod organizer;
 pub mod reader;
 pub mod rule_change;

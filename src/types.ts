@@ -31,6 +31,7 @@ export interface ChatMessage {
   plan?:       ProposedPlan;
   ruleChange?: RuleChange;
   isError?:    boolean;
+  canRetry?:   boolean;
 }
 
 export interface PlanOp {

@@ -26,6 +26,7 @@ export default function App() {
   const [apiHistory, setApiHistory]   = useState<ApiMessage[]>([]);
   const [agentState, setAgentState]   = useState<AgentState>("idle");
   const [inputText, setInputText]     = useState("");
+  const [lastUserText, setLastUserText] = useState<string | null>(null);
   const inputRef                       = useRef<HTMLInputElement>(null);
 
   // N1: AI 콘텐츠 처리 동의 상태
@@ -143,16 +144,21 @@ export default function App() {
 
   // ── 챗 입력 전송 ──────────────────────────────────────────────────────────
 
-  async function handleSend() {
-    const text = inputText.trim();
+  async function handleSend(retryText?: string) {
+    // retryText 가 문자열이면 재시도(재전송). 버튼 이벤트가 실수로 넘어와도 typeof 로 걸러진다.
+    const isRetry = typeof retryText === "string" && retryText.trim() !== "";
+    const text = (isRetry ? retryText! : inputText).trim();
     if (!text || agentState === "thinking") return;
-    setInputText("");
+    if (!isRetry) setInputText("");
 
     const isUndo = text.startsWith("/undo");
 
-    // 사용자 버블 추가.
-    const userMsg: ChatMessage = { id: nextId(), role: "user", text };
-    setMessages((prev) => [...prev, userMsg]);
+    // 재시도가 아니면 사용자 버블 추가. 재시도는 기존 버블을 유지하고 요청만 재전송한다.
+    if (!isRetry) {
+      const userMsg: ChatMessage = { id: nextId(), role: "user", text };
+      setMessages((prev) => [...prev, userMsg]);
+    }
+    setLastUserText(text);
     setAgentState("thinking");
 
     try {
@@ -262,6 +268,8 @@ export default function App() {
           ? "API 키가 설정되지 않았습니다. 설정(⚙)에서 Anthropic API 키를 입력해 주세요."
           : errText,
         isError: true,
+        // API 키 문제는 재시도로 안 풀리므로(설정 필요) 제외. 그 외(혼잡·네트워크)만 재시도 버튼.
+        canRetry: !isApiKeyError,
       };
       setMessages((prev) => [...prev, agentMsg]);
       setAgentState("idle");
@@ -317,6 +325,7 @@ export default function App() {
               loading={agentState === "thinking"}
               onPlanOpen={openPlanModal}
               onRuleOpen={openRuleModal}
+              onRetry={() => { if (lastUserText) handleSend(lastUserText); }}
               folderPath={folderPath}
             />
           </div>
@@ -371,7 +380,7 @@ export default function App() {
               />
               <button
                 className="send-btn"
-                onClick={handleSend}
+                onClick={() => handleSend()}
                 disabled={!folderPath || agentState === "thinking" || !inputText.trim()}
               >
                 ↑

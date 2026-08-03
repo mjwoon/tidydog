@@ -7,6 +7,7 @@ interface Props {
   loading:      boolean;
   onPlanOpen:   (plan: ProposedPlan) => void;
   onRuleOpen:   (rc: RuleChange) => void;
+  onRetry:      () => void;
   folderPath:   string | null;
 }
 
@@ -96,10 +97,12 @@ function Bubble({
   msg,
   onPlanOpen,
   onRuleOpen,
+  onRetry,
 }: {
   msg:        ChatMessage;
   onPlanOpen: (p: ProposedPlan) => void;
   onRuleOpen: (rc: RuleChange) => void;
+  onRetry:    () => void;
 }) {
   const isUser = msg.role === "user";
   return (
@@ -135,6 +138,19 @@ function Bubble({
         {/* assistant(비-에러) 메시지만 마크다운 렌더. 사용자/에러 메시지는 평문 유지. */}
         {!isUser && !msg.isError ? <MarkdownMessage text={msg.text} /> : msg.text}
       </div>
+      {msg.isError && msg.canRetry && (
+        <button
+          onClick={onRetry}
+          style={{
+            marginTop: 6, padding: "6px 12px", borderRadius: "var(--r-sm)",
+            border: "1px solid var(--line)", background: "var(--surface)",
+            cursor: "pointer", fontSize: 12.5, fontWeight: 600,
+            fontFamily: "var(--ui)", color: "var(--primary)",
+          }}
+        >
+          ↻ 다시 시도
+        </button>
+      )}
       {msg.plan && (
         <div style={{ maxWidth: "80%" }}>
           <PlanChip plan={msg.plan} onOpen={() => onPlanOpen(msg.plan!)} />
@@ -166,7 +182,7 @@ function ThinkingBubble() {
   );
 }
 
-export function Chat({ messages, loading, onPlanOpen, onRuleOpen, folderPath }: Props) {
+export function Chat({ messages, loading, onPlanOpen, onRuleOpen, onRetry, folderPath }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -183,7 +199,7 @@ export function Chat({ messages, loading, onPlanOpen, onRuleOpen, folderPath }: 
         </div>
       )}
       {messages.map((m) => (
-        <Bubble key={m.id} msg={m} onPlanOpen={onPlanOpen} onRuleOpen={onRuleOpen} />
+        <Bubble key={m.id} msg={m} onPlanOpen={onPlanOpen} onRuleOpen={onRuleOpen} onRetry={onRetry} />
       ))}
       {loading && <ThinkingBubble />}
       <div ref={bottomRef} />

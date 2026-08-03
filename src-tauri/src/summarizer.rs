@@ -98,33 +98,16 @@ impl<'a> CloudSummarizer<'a> {
             ]
         });
 
-        let client = reqwest::blocking::Client::new();
-        let response = client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .map_err(|e| SummaryError::ApiError(format!("request failed: {e}")))?;
-
-        let status = response.status();
-
-        if status.as_u16() == 429 {
-            return Err(SummaryError::RateLimited);
-        }
-
-        if !status.is_success() {
-            let status_str = status.to_string();
-            let body_text = response.text().unwrap_or_default();
-            return Err(SummaryError::ApiError(format!(
-                "HTTP {status_str}: {body_text}"
-            )));
-        }
-
-        let resp_json: serde_json::Value = response
-            .json()
-            .map_err(|e| SummaryError::ParseError(format!("failed to parse API response: {e}")))?;
+        // 공유 llm_http 로 호출(재시도 + 구조적 에러). ApiError → SummaryError 매핑.
+        let resp_json: serde_json::Value =
+            crate::llm_http::anthropic_post_with_retry(api_key, &body).map_err(|e| {
+                use crate::llm_http::ApiErrorKind;
+                match e.kind {
+                    ApiErrorKind::RateLimited | ApiErrorKind::Overloaded => SummaryError::RateLimited,
+                    ApiErrorKind::Parse => SummaryError::ParseError(e.detail),
+                    _ => SummaryError::ApiError(e.user_message()),
+                }
+            })?;
 
         let text = resp_json
             .get("content")
